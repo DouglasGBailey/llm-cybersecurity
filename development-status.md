@@ -20,12 +20,15 @@ request to add k8s cluster scanning (minimum 1-node support), with its own
 separately-authorized scope model (`authorized_k8s_clusters`) mirroring
 the `ExploitAgent`/`CodeAnalyzer` precedent of a dedicated authorization
 list per resource type, live-verified against a disposable `kind` cluster
-seeded with hand-written misconfigs; (4) **this session** — stood up a
-second, standing k8s lab target by deploying the third-party
-"Kubernetes Goat" (madhuakula/kubernetes-goat) intentionally-vulnerable
-project on a persistent local `kind` cluster, the k8s equivalent of DVWA,
-confirming `KubernetesAnalyzer` generalizes correctly beyond
-self-authored test manifests.
+seeded with hand-written misconfigs; (4) stood up a second, standing k8s
+lab target by deploying the third-party "Kubernetes Goat"
+(madhuakula/kubernetes-goat) intentionally-vulnerable project on a
+persistent local `kind` cluster, the k8s equivalent of DVWA, confirming
+`KubernetesAnalyzer` generalizes correctly beyond self-authored test
+manifests, plus a new tutorial module covering it; (5) **this session** —
+added `start-system.sh`, a single terminal entrypoint (interactive menu +
+scriptable subcommands) covering every feature: scanning, reports,
+dashboard, REST API, tests, and lab-target management.
 
 ## Current Project State
 
@@ -539,6 +542,53 @@ before considering this done — no browser tools available in this
 environment to screenshot-verify visually, so this is unverified beyond
 static/structural checks; worth an actual browser look next session.
 
+### This session — `start-system.sh` terminal entrypoint
+
+User asked for a single terminal entrypoint to access every feature.
+Built `start-system.sh` at the project root: an interactive menu (run a
+scan, view a report, regenerate the dashboard, start the REST API, run
+the test suite, manage lab targets) that also works non-interactively via
+subcommands (`scan`, `dashboard`, `api`, `test`, `lab status|up|down`) for
+scripting. Deliberately does not loosen any underlying safety default —
+still defaults to dry-run for scans, still requires an explicit `y`
+confirmation (defaulting to no-op) before anything destructive (stopping
+DVWA, deleting the k8s-goat cluster).
+
+**Found and fixed a real bug while testing it**: the initial
+`choose_from` helper printed a numbered list by piping candidates into it
+(`list_targets | choose_from ...`) and read the user's choice with `read`
+*inside* that same function. Since `choose_from`'s stdin was the pipe from
+`list_targets`, and `mapfile` had already drained that pipe to build the
+list, the subsequent `read` saw an already-closed/empty stdin instead of
+the terminal — every menu selection that went through `choose_from`
+(target picker, report picker) silently failed with "Invalid choice."
+regardless of what the user typed. Caught this by testing the interactive
+menu with piped input rather than assuming the happy path worked. Fixed
+by passing candidates as function arguments instead of via a pipe, so
+`read` keeps using the real stdin — the general lesson (documented inline
+in the script): never prompt with `read` from inside a function whose own
+stdin has been repurposed by a pipe.
+
+**Lab-target automation encapsulates a known quirk**: `lab up dvwa`
+automatically detects and repairs `llm-cybersec-dvwa`'s Apache-not-
+restarting-after-stop issue (documented in an earlier session's entry
+above) via a status check + conditional restart, so a future `docker
+start` + scan doesn't need the manual `docker exec ... service apache2
+start` step this project discovered by hand. `lab up k8s-goat` similarly
+encapsulates the full `kind create cluster` + clone + `setup-kubernetes-
+goat.sh` sequence from the prior session, idempotently (skips creation if
+the cluster/clone already exist).
+
+**Verified**: every menu path (scan → target/agent selection → dry-run
+prompt → AI-triage prompt, view report, dashboard, lab submenu, exit) and
+every non-interactive subcommand, using piped `printf` input for the
+interactive paths (matching the technique that caught the bug above).
+`./start-system.sh lab up dvwa` re-tested against a freshly-stopped
+container to confirm the auto-repair path is reachable, not just
+theoretically correct. Full `pytest tests/` suite (179/179) re-run
+afterward as a sanity check — this script doesn't touch Python code, but
+confirming nothing else drifted costs nothing.
+
 ### Known Issues / Limitations
 - Carried forward from prior sessions (nmap/semgrep optional, LLM probe
   heuristic, exact-content dedup, compliance mapping intentionally
@@ -647,6 +697,11 @@ dashboard, API auth opt-in with localhost-default bind, container
   code-intelligence audit fixes, which have no dedicated module (those
   were internal hardening, not a new user-facing capability, so arguably
   don't need one)
+- **This session — `start-system.sh`** (new, project root, executable) —
+  interactive menu + non-interactive subcommands wrapping
+  `src.orchestrator`/`src.dashboard`/`src.api`/`pytest`/`docker`/`kind`.
+  `README.md` modified (new "Quick start: start-system.sh" section, minor
+  agent-count/list corrections elsewhere)
 
 ### Dependencies
 No new dependencies this session for the Python package itself —

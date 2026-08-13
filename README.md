@@ -12,7 +12,7 @@ listed** in your `config/scope.yaml`. Only add targets you personally own or
 are explicitly authorized to test (your own lab VMs/containers, an active
 HackTheBox/TryHackMe VPN range, etc).
 
-- The six scanning agents (Recon through LLM Security) perform read-only
+- The read-only scanning agents (Recon through Kubernetes) perform
   enumeration and hygiene checks only — no exploitation, no brute force,
   no denial-of-service.
 - Real exploitation exists in one place, `ExploitAgent`, and is gated far
@@ -125,9 +125,31 @@ cp config/scope.example.yaml config/scope.yaml
 (`dig`/`whois` are typically preinstalled on Linux). `bandit` is installed
 via `requirements.txt`; `semgrep` is optional (heavier, and
 `--config=auto` fetches community rules over the network) — install it
-separately with `pip install semgrep` if you want it. Any missing tool
-degrades gracefully and records a `tool-unavailable` finding instead of
-crashing.
+separately with `pip install semgrep` if you want it. `kubectl` is needed
+for `KubernetesAnalyzer`. Any missing tool degrades gracefully and records
+a `tool-unavailable` finding instead of crashing.
+
+## Quick start: `start-system.sh`
+
+A single entrypoint for everything in this README, as an interactive
+terminal menu:
+
+```bash
+./start-system.sh
+```
+
+Run a scan, view a report, regenerate the dashboard, start the REST API,
+run the test suite, or manage the local lab targets (start/repair DVWA,
+create/tear down the Kubernetes Goat cluster) — all from one menu. It
+never loosens any of the underlying safety defaults (still defaults to
+dry-run, still requires explicit confirmation before anything destructive
+like stopping/deleting a lab target).
+
+It also works non-interactively for scripting — `./start-system.sh --help`
+for the subcommand form (`scan`, `dashboard`, `api`, `test`, `lab`).
+
+The rest of this README documents the underlying commands directly, for
+anyone who wants to drive the platform without the menu.
 
 ## Usage
 
@@ -144,7 +166,7 @@ Live run against an authorized target:
 python -m src.orchestrator --scope config/scope.yaml --target local-dvwa --execute
 ```
 
-Run a subset of agents (available: `recon`, `webapp`, `api`, `infra`, `code`, `llm`, `exploit`):
+Run a subset of agents (available: `recon`, `webapp`, `api`, `infra`, `code`, `llm`, `exploit`, `k8s`):
 
 ```bash
 python -m src.orchestrator --scope config/scope.yaml --target local-dvwa --agents webapp,api --execute
