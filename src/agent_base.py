@@ -17,7 +17,8 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlparse
 
 from src.logging_setup import get_logger, log_with_fields
 from src.scope_guard import ScopeGuard
@@ -32,7 +33,7 @@ class AgentResult:
     agent_name: str
     target: str
     timestamp: str
-    status: str  # "ok" | "error" | "skipped"
+    status: Literal["ok", "error", "skipped"]
     findings: list[dict[str, Any]] = field(default_factory=list)
     raw_output: list[str] = field(default_factory=list)
     error: str | None = None
@@ -62,8 +63,13 @@ class BaseAgent(ABC):
 
     @abstractmethod
     def run(self, target: str) -> AgentResult:
-        """Execute this agent's checks against `target`. Must call
-        self.scope_guard.authorize(target) before any tool invocation."""
+        """Execute this agent's checks against `target`. Must authorize via
+        the scope_guard before any tool invocation -- self.scope_guard.authorize(target)
+        for network targets, or the matching authorize_path()/authorize_exploit()
+        for an agent scoped differently (see CodeAnalyzer, ExploitAgent).
+        AiTriageAnalyzer is the sole exception: it only reads an already-scoped
+        evidence bundle and touches no target directly, so it makes no
+        authorize call of its own."""
         raise NotImplementedError
 
     def _run_tool(self, cmd: list[str]) -> subprocess.CompletedProcess:
@@ -108,3 +114,23 @@ class BaseAgent(ABC):
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _prepare_request(self, method: str, url: str, **log_fields: Any) -> None:
+        """Shared rate-limit/log/dry-run-guard prelude for every HTTP-issuing
+        agent's request helper. Raises RuntimeError in dry-run mode -- the
+        caller's own request helper is expected to translate that into
+        whatever exception type its call sites already handle (e.g.
+        requests.RequestException), so this stays HTTP-library-agnostic."""
+        self._respect_rate_limit()
+        log_with_fields(self.logger, logging.INFO, method, url=url, **log_fields)
+        if self.dry_run:
+            log_with_fields(self.logger, logging.INFO, "dry-run: not executing", url=url)
+            raise RuntimeError(f"[dry-run: not executed] {method} {url}")
+
+    @staticmethod
+    def _host_from_target(target: str) -> str:
+        """Extract the bare host/IP from a target string that may include
+        a scheme (http://host:port/path) or just host[:port]."""
+        if "://" in target:
+            return urlparse(target).hostname or target
+        return target.split("/")[0].split(":")[0]

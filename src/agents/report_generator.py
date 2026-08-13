@@ -28,13 +28,21 @@ BANDIT_SEVERITY_MAP = {"HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
 SEMGREP_SEVERITY_MAP = {"ERROR": "high", "WARNING": "medium", "INFO": "low"}
 
 
-def _severity_for(finding: dict[str, Any]) -> str:
+def severity_for(finding: dict[str, Any]) -> str:
     ftype = finding.get("type", "")
     if ftype == "bandit-finding":
         return BANDIT_SEVERITY_MAP.get(str(finding.get("severity", "")).upper(), "medium")
     if ftype == "semgrep-finding":
         return SEMGREP_SEVERITY_MAP.get(str(finding.get("severity", "")).upper(), "medium")
     return SEVERITY_BY_TYPE.get(ftype, "info")
+
+
+def format_finding_detail(finding: dict[str, Any]) -> str:
+    """Render a finding's non-metadata fields as a `k=v, k=v` string,
+    shared by ReportGenerator's diff section and alerting's email body."""
+    return ", ".join(
+        f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by", "compliance")
+    )
 
 
 class ReportGenerator:
@@ -73,7 +81,7 @@ class ReportGenerator:
         else:
             grouped: dict[str, list[dict[str, Any]]] = {level: [] for level in SEVERITY_ORDER}
             for finding in findings:
-                grouped[_severity_for(finding)].append(finding)
+                grouped[severity_for(finding)].append(finding)
 
             for level in SEVERITY_ORDER:
                 bucket = grouped[level]
@@ -113,23 +121,13 @@ class ReportGenerator:
             lines.append("")
             return lines
 
-        if new_findings:
-            lines.append(f"### New ({len(new_findings)})")
-            for finding in new_findings:
+        for label, bucket in (("New", new_findings), ("Resolved", resolved_findings)):
+            if not bucket:
+                continue
+            lines.append(f"### {label} ({len(bucket)})")
+            for finding in bucket:
                 ftype = finding.get("type", "unknown")
-                detail = ", ".join(
-                    f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by", "compliance")
-                )
-                lines.append(f"- **`{ftype}`**" + (f" — {detail}" if detail else ""))
-            lines.append("")
-
-        if resolved_findings:
-            lines.append(f"### Resolved ({len(resolved_findings)})")
-            for finding in resolved_findings:
-                ftype = finding.get("type", "unknown")
-                detail = ", ".join(
-                    f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by", "compliance")
-                )
+                detail = format_finding_detail(finding)
                 lines.append(f"- **`{ftype}`**" + (f" — {detail}" if detail else ""))
             lines.append("")
 

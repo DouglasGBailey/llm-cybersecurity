@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from urllib.parse import urlparse
 
 import requests
 import yaml
@@ -86,7 +85,7 @@ class LlmSecurityAnalyzer(BaseAgent):
         for probe in probes:
             try:
                 response_text = self._send_probe(url, probe["prompt"])
-            except requests.RequestException as e:
+            except Exception as e:  # noqa: BLE001 - one probe's failure shouldn't lose findings from the rest
                 log_with_fields(self.logger, logging.WARNING, str(e), probe=probe["id"])
                 result.findings.append({
                     "type": "probe-request-failed", "probe_id": probe["id"], "detail": str(e),
@@ -110,12 +109,6 @@ class LlmSecurityAnalyzer(BaseAgent):
         })
         return result
 
-    @staticmethod
-    def _host_from_target(target: str) -> str:
-        if "://" in target:
-            return urlparse(target).hostname or target
-        return target.split("/")[0].split(":")[0]
-
     def _load_probes(self) -> list[dict]:
         if self.probes_path.exists():
             with self.probes_path.open() as f:
@@ -126,11 +119,10 @@ class LlmSecurityAnalyzer(BaseAgent):
         return DEFAULT_PROBES
 
     def _send_probe(self, url: str, prompt: str) -> str:
-        self._respect_rate_limit()
-        log_with_fields(self.logger, logging.INFO, "POST probe", url=url)
-        if self.dry_run:
-            log_with_fields(self.logger, logging.INFO, "dry-run: not executing", url=url)
-            raise requests.RequestException(f"[dry-run: not executed] POST {url}")
+        try:
+            self._prepare_request("POST probe", url)
+        except RuntimeError as e:
+            raise requests.RequestException(str(e)) from e
 
         resp = requests.post(url, json={self.request_field: prompt}, timeout=self.request_timeout_seconds)
         resp.raise_for_status()

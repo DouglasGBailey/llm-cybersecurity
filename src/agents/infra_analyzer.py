@@ -134,7 +134,7 @@ class InfraAnalyzer(BaseAgent):
         spf_records = [line for line in proc.stdout.splitlines() if "v=spf1" in line]
         if spf_records:
             result.findings.append({"type": "spf-record-found", "value": spf_records[0].strip()})
-        elif proc.stdout.strip():
+        else:
             result.findings.append({"type": "spf-record-missing", "host": host})
 
     def _check_dmarc(self, host: str, result: AgentResult) -> None:
@@ -144,7 +144,7 @@ class InfraAnalyzer(BaseAgent):
         dmarc_records = [line for line in proc.stdout.splitlines() if "v=dmarc1" in line.lower()]
         if dmarc_records:
             result.findings.append({"type": "dmarc-record-found", "value": dmarc_records[0].strip()})
-        elif proc.stdout.strip():
+        else:
             result.findings.append({"type": "dmarc-record-missing", "host": dmarc_host})
 
     def _check_dnssec(self, host: str, result: AgentResult) -> None:

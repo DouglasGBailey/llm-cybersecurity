@@ -1,6 +1,6 @@
 from src.agent_base import AgentResult
 from src.agents.evidence_collector import EvidenceCollector
-from src.agents.report_generator import ReportGenerator, _severity_for
+from src.agents.report_generator import ReportGenerator, format_finding_detail, severity_for
 from src.diff_engine import compute_diff
 
 
@@ -12,19 +12,32 @@ def make_result(agent_name, target, findings):
 
 
 def test_severity_mapping_known_types():
-    assert _severity_for({"type": "tls-certificate-expired"}) == "high"
-    assert _severity_for({"type": "llm-probe-failed"}) == "high"
-    assert _severity_for({"type": "missing-security-headers"}) == "medium"
-    assert _severity_for({"type": "graphql-introspection-enabled"}) == "low"
-    assert _severity_for({"type": "server-banner"}) == "info"
-    assert _severity_for({"type": "some-unknown-type"}) == "info"
+    assert severity_for({"type": "tls-certificate-expired"}) == "high"
+    assert severity_for({"type": "llm-probe-failed"}) == "high"
+    assert severity_for({"type": "missing-security-headers"}) == "medium"
+    assert severity_for({"type": "graphql-introspection-enabled"}) == "low"
+    assert severity_for({"type": "server-banner"}) == "info"
+    assert severity_for({"type": "some-unknown-type"}) == "info"
 
 
 def test_severity_mapping_bandit_and_semgrep():
-    assert _severity_for({"type": "bandit-finding", "severity": "HIGH"}) == "high"
-    assert _severity_for({"type": "bandit-finding", "severity": "LOW"}) == "low"
-    assert _severity_for({"type": "semgrep-finding", "severity": "ERROR"}) == "high"
-    assert _severity_for({"type": "semgrep-finding", "severity": "INFO"}) == "low"
+    assert severity_for({"type": "bandit-finding", "severity": "HIGH"}) == "high"
+    assert severity_for({"type": "bandit-finding", "severity": "LOW"}) == "low"
+    assert severity_for({"type": "semgrep-finding", "severity": "ERROR"}) == "high"
+    assert severity_for({"type": "semgrep-finding", "severity": "INFO"}) == "low"
+
+
+def test_format_finding_detail_excludes_metadata_keys():
+    finding = {
+        "type": "sqli-exploited", "seen_by": ["exploit-agent"], "compliance": [{"framework": "x", "control": "y"}],
+        "path": "/vuln/sqli/", "param": "id",
+    }
+    detail = format_finding_detail(finding)
+    assert "type=" not in detail
+    assert "seen_by=" not in detail
+    assert "compliance=" not in detail
+    assert "path=/vuln/sqli/" in detail
+    assert "param=id" in detail
 
 
 def test_report_with_no_findings():

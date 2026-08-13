@@ -171,3 +171,22 @@ def test_missing_spf_dmarc_flagged_when_txt_records_exist_but_dont_match(guard):
     assert "spf-record-missing" in types
     assert "dmarc-record-missing" in types
     assert "dnssec-enabled" not in types
+
+
+def test_missing_spf_dmarc_flagged_when_no_txt_records_at_all(guard):
+    """Regression: a domain with zero TXT records (dig returns empty
+    output, not just a non-matching record) must still be flagged missing,
+    not silently skipped."""
+    agent = InfraAnalyzer(guard, dry_run=False)
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch.object(InfraAnalyzer, "_fetch_peer_cert", side_effect=ConnectionRefusedError("no tls")), \
+         patch("shutil.which", return_value="/usr/bin/fake"), \
+         patch("subprocess.run", side_effect=fake_run):
+        result = agent.run("127.0.0.1")
+
+    types = {f["type"] for f in result.findings}
+    assert "spf-record-missing" in types
+    assert "dmarc-record-missing" in types

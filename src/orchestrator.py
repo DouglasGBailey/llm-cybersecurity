@@ -81,6 +81,11 @@ def run_scan(
 ) -> dict[str, Any]:
     """Run the requested agents against authorized_target and produce all
     the usual output files. Used by both main() (CLI) and src/api.py."""
+    if (PATH_BASED_AGENTS & set(agent_keys)) and not code_path:
+        raise ValueError("code_path is required when 'code' is in agent_keys")
+    if (EXPLOIT_AGENTS & set(agent_keys)) and exploit_target is None:
+        raise ValueError("exploit_target is required when 'exploit' is in agent_keys")
+
     reports_dir = Path(reports_dir)
     dry_run = not execute
     mode = "DRY-RUN (no actions executed)" if dry_run else "EXECUTE (live actions)"
@@ -183,7 +188,8 @@ def run_scan(
             )
             print(f"AI triage narrative written to {ai_triage_path}")
         else:
-            print(f"AI triage did not produce a narrative: {triage_result.findings}")
+            detail = triage_result.error or triage_result.findings
+            print(f"AI triage did not produce a narrative ({triage_result.status}): {detail}")
 
     exit_code = EXIT_NEW_FINDINGS if (diff is not None and diff["has_new_findings"]) else EXIT_OK
 
@@ -209,8 +215,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="orchestrator",
         description="Controlled, scope-gated security assessment orchestrator. "
-        "Runs read-only, non-exploitative agents against explicitly "
-        "authorized lab targets only.",
+        "Runs agents -- including opt-in live exploitation via ExploitAgent, "
+        "when explicitly requested and separately authorized -- against "
+        "explicitly authorized lab targets only.",
     )
     parser.add_argument(
         "--scope", required=True, help="Path to scope.yaml (see config/scope.example.yaml)"

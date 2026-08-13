@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from src.agents.report_generator import SEVERITY_ORDER, _severity_for
+from src.agents.report_generator import SEVERITY_ORDER, severity_for
 from src.history_store import DEFAULT_DB_PATH, HistoryStore
 from src.scope_guard import ScopeGuard
 
@@ -63,7 +63,7 @@ def _sparkline_svg(counts: list[int]) -> str:
 def _severity_breakdown(findings: list[dict[str, Any]]) -> dict[str, int]:
     counts = {level: 0 for level in SEVERITY_ORDER}
     for finding in findings:
-        counts[_severity_for(finding)] += 1
+        counts[severity_for(finding)] += 1
     return counts
 
 

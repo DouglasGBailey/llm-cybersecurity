@@ -2,7 +2,7 @@ import textwrap
 
 import pytest
 
-from src.scope_guard import OutOfScopeError, ScopeConfigError, ScopeGuard
+from src.scope_guard import ExploitTarget, OutOfScopeError, ScopeConfigError, ScopeGuard
 
 
 def write_scope(tmp_path, content):
@@ -252,6 +252,50 @@ def test_recon_authorization_does_not_imply_exploit_authorization(tmp_path):
         guard.resolve_exploit_target("local")
     with pytest.raises(OutOfScopeError):
         guard.authorize_exploit("127.0.0.1")
+
+
+def test_exploit_target_direct_construction_with_resettable_false_rejected():
+    """Backstop for the resettable hard line: even bypassing ScopeGuard._load
+    entirely and constructing ExploitTarget directly must fail."""
+    with pytest.raises(ScopeConfigError):
+        ExploitTarget(name="evil", host="127.0.0.1", resettable=False)
+
+
+def test_malformed_yaml_raises_scope_config_error(tmp_path):
+    p = tmp_path / "scope.yaml"
+    p.write_text("authorized_targets: [\n  - broken: yaml: here\n")
+    with pytest.raises(ScopeConfigError):
+        ScopeGuard(p)
+
+
+def test_authorized_target_missing_host_raises_scope_config_error(tmp_path):
+    p = write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+    """)
+    with pytest.raises(ScopeConfigError):
+        ScopeGuard(p)
+
+
+def test_exploit_target_missing_name_raises_scope_config_error(tmp_path):
+    p = write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+        authorized_exploit_targets:
+          - host: 127.0.0.1
+            resettable: true
+    """)
+    with pytest.raises(ScopeConfigError):
+        ScopeGuard(p)
+
+
+def test_ipv4_cidr_scope_does_not_crash_on_ipv6_resolved_address():
+    """Regression: a host that resolves to both an IPv4 and an IPv6
+    address must not raise when checked against an IPv4-only CIDR scope
+    entry -- a family mismatch is simply not a match, not an error."""
+    assert ScopeGuard._matches("192.168.56.0/24", "dualstack.example", {"192.168.56.42", "::1"}) is True
+    assert ScopeGuard._matches("192.168.56.0/24", "v6only.example", {"::1"}) is False
 
 
 def test_authorize_exploit_happy_path(tmp_path):

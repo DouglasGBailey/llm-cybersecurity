@@ -22,6 +22,7 @@ interface with no auth in front of it.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import logging
 import os
@@ -75,7 +76,7 @@ async def require_api_key(request: Request) -> None:
     if not expected:
         return
     auth_header = request.headers.get("authorization", "")
-    if auth_header != f"Bearer {expected}":
+    if not hmac.compare_digest(auth_header, f"Bearer {expected}"):
         raise HTTPException(status_code=401, detail="Missing or invalid API key")
 
 

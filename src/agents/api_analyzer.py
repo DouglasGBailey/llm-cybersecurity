@@ -9,7 +9,6 @@ of discovered endpoints.
 from __future__ import annotations
 
 import logging
-from urllib.parse import urlparse
 
 import requests
 
@@ -66,32 +65,24 @@ class ApiAnalyzer(BaseAgent):
         ):
             try:
                 step(base_url, result)
-            except requests.RequestException as e:
+            except Exception as e:  # noqa: BLE001 - one step's failure shouldn't lose findings from the rest
                 log_with_fields(self.logger, logging.WARNING, str(e), target=base_url)
                 result.findings.append({"type": "request-failed", "step": step.__name__, "detail": str(e)})
 
         return result
 
-    @staticmethod
-    def _host_from_target(target: str) -> str:
-        if "://" in target:
-            return urlparse(target).hostname or target
-        return target.split("/")[0].split(":")[0]
-
     def _get(self, url: str) -> requests.Response:
-        self._respect_rate_limit()
-        log_with_fields(self.logger, logging.INFO, "GET", url=url)
-        if self.dry_run:
-            log_with_fields(self.logger, logging.INFO, "dry-run: not executing", url=url)
-            raise requests.RequestException(f"[dry-run: not executed] GET {url}")
+        try:
+            self._prepare_request("GET", url)
+        except RuntimeError as e:
+            raise requests.RequestException(str(e)) from e
         return requests.get(url, timeout=self.request_timeout_seconds)
 
     def _post(self, url: str, json_body: dict) -> requests.Response:
-        self._respect_rate_limit()
-        log_with_fields(self.logger, logging.INFO, "POST", url=url)
-        if self.dry_run:
-            log_with_fields(self.logger, logging.INFO, "dry-run: not executing", url=url)
-            raise requests.RequestException(f"[dry-run: not executed] POST {url}")
+        try:
+            self._prepare_request("POST", url)
+        except RuntimeError as e:
+            raise requests.RequestException(str(e)) from e
         return requests.post(url, json=json_body, timeout=self.request_timeout_seconds)
 
     def _discover_openapi_spec(self, base_url: str, result: AgentResult) -> None:

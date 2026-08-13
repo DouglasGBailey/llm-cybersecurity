@@ -26,6 +26,7 @@ from typing import Any
 
 import yaml
 
+from src.agents.report_generator import format_finding_detail
 from src.logging_setup import get_logger, log_with_fields
 
 DEFAULT_ALERTS_CONFIG = Path(__file__).resolve().parent.parent / "config" / "alerts.yaml"
@@ -54,9 +55,7 @@ def format_alert_email(target_name: str, diff: dict[str, Any]) -> tuple[str, str
     ]
     for finding in new_findings:
         ftype = finding.get("type", "unknown")
-        detail = ", ".join(
-            f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by", "compliance")
-        )
+        detail = format_finding_detail(finding)
         lines.append(f"- {ftype}" + (f" ({detail})" if detail else ""))
     lines.append("")
     lines.append(f"{resolved_count} finding(s) resolved, {unchanged_count} unchanged since last scan.")

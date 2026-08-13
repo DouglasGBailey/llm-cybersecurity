@@ -49,6 +49,17 @@ class ExploitTarget:
     notes: str = ""
     web_port: int | None = None
 
+    def __post_init__(self) -> None:
+        # Enforced here, not just in ScopeGuard._load, so this hard line
+        # can't be bypassed by any other construction path (e.g. tests or
+        # future code building an ExploitTarget directly).
+        if not self.resettable:
+            raise ScopeConfigError(
+                f"ExploitTarget '{self.name}' must have resettable=True. Full "
+                "exploitation (real data extraction, real command execution) is "
+                "only authorized against targets you can tear down and recreate."
+            )
+
 
 @dataclass
 class Scope:
@@ -72,44 +83,52 @@ class ScopeGuard:
                 "Copy config/scope.example.yaml to config/scope.yaml and fill "
                 "in your authorized lab targets before running any agent."
             )
-        with scope_path.open() as f:
-            raw = yaml.safe_load(f) or {}
+        try:
+            with scope_path.open() as f:
+                raw = yaml.safe_load(f) or {}
+        except yaml.YAMLError as e:
+            raise ScopeConfigError(f"{scope_path} is not valid YAML: {e}") from e
 
-        targets_raw = raw.get("authorized_targets") or []
-        if not targets_raw:
-            raise ScopeConfigError(
-                f"{scope_path} has no authorized_targets. Refusing to run "
-                "against zero authorized targets."
-            )
-
-        targets = [
-            AuthorizedTarget(
-                name=t["name"], host=t["host"], notes=t.get("notes", ""),
-                web_port=t.get("web_port"), tls_port=t.get("tls_port"),
-            )
-            for t in targets_raw
-        ]
-        excluded = raw.get("excluded") or []
-        max_scan_rate = float(raw.get("max_scan_rate", 5.0))
-        authorized_code_paths = raw.get("authorized_code_paths") or []
-
-        exploit_targets_raw = raw.get("authorized_exploit_targets") or []
-        exploit_targets = []
-        for t in exploit_targets_raw:
-            if not t.get("resettable"):
+        try:
+            targets_raw = raw.get("authorized_targets") or []
+            if not targets_raw:
                 raise ScopeConfigError(
-                    f"authorized_exploit_targets entry '{t.get('name', '?')}' in "
-                    f"{scope_path} is missing `resettable: true`. Full exploitation "
-                    "(real data extraction, real command execution) is only "
-                    "authorized against targets you can tear down and recreate -- "
-                    "add `resettable: true` only if that's actually true for this "
-                    "target, or remove the entry."
+                    f"{scope_path} has no authorized_targets. Refusing to run "
+                    "against zero authorized targets."
                 )
-            exploit_targets.append(ExploitTarget(
-                name=t["name"], host=t["host"], resettable=True,
-                known_vulnerabilities=t.get("known_vulnerabilities") or {},
-                notes=t.get("notes", ""), web_port=t.get("web_port"),
-            ))
+
+            targets = [
+                AuthorizedTarget(
+                    name=t["name"], host=t["host"], notes=t.get("notes", ""),
+                    web_port=t.get("web_port"), tls_port=t.get("tls_port"),
+                )
+                for t in targets_raw
+            ]
+            excluded = raw.get("excluded") or []
+            max_scan_rate = float(raw.get("max_scan_rate", 5.0))
+            authorized_code_paths = raw.get("authorized_code_paths") or []
+
+            exploit_targets_raw = raw.get("authorized_exploit_targets") or []
+            exploit_targets = []
+            for t in exploit_targets_raw:
+                if not t.get("resettable"):
+                    raise ScopeConfigError(
+                        f"authorized_exploit_targets entry '{t.get('name', '?')}' in "
+                        f"{scope_path} is missing `resettable: true`. Full exploitation "
+                        "(real data extraction, real command execution) is only "
+                        "authorized against targets you can tear down and recreate -- "
+                        "add `resettable: true` only if that's actually true for this "
+                        "target, or remove the entry."
+                    )
+                exploit_targets.append(ExploitTarget(
+                    name=t["name"], host=t["host"], resettable=True,
+                    known_vulnerabilities=t.get("known_vulnerabilities") or {},
+                    notes=t.get("notes", ""), web_port=t.get("web_port"),
+                ))
+        except ScopeConfigError:
+            raise
+        except (KeyError, TypeError, ValueError) as e:
+            raise ScopeConfigError(f"{scope_path} is malformed: {e}") from e
 
         return Scope(
             authorized_targets=targets, excluded=excluded, max_scan_rate=max_scan_rate,
@@ -223,9 +242,15 @@ class ScopeGuard:
             return True
         try:
             network = ipaddress.ip_network(scope_entry, strict=False)
-            for ip in resolved_ips:
+        except ValueError:
+            return False
+        for ip in resolved_ips:
+            try:
                 if ipaddress.ip_address(ip) in network:
                     return True
-        except ValueError:
-            pass
+            except (ValueError, TypeError):
+                # ip and network are different address families (e.g. an
+                # IPv6-resolved address against an IPv4 CIDR entry) --
+                # simply not a match, not an error worth surfacing.
+                continue
         return False

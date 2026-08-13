@@ -2,15 +2,20 @@
 
 ## Last Updated
 **Date**: 2026-08-13
-**Session Duration**: Multi-session build (10 sessions in one day)
-**Claude Code Session**: Full recon/hygiene platform built and hardened
-across prior sessions (6 scanning agents, evidence/report/AI-triage,
-scheduled scanning + diffing, alerting, compliance mapping, dashboard,
-containerization + REST API). This session: added real, config-driven
-exploitation (`ExploitAgent`) after the user asked to add penetration-
-testing/exploit capability — a genuine policy shift from the platform's
-prior "no agent performs exploitation" stance, handled deliberately with
-its own safety design rather than bolted onto the existing agent pattern.
+**Session Duration**: Multi-session build (12+ sessions in one day)
+**Claude Code Session**: Full recon/hygiene platform + real, config-driven
+exploitation (`ExploitAgent`) built across prior sessions (see git log for
+the ExploitAgent design session's full detail — 6 scanning agents,
+evidence/report/AI-triage, scheduled scanning + diffing, alerting,
+compliance mapping, dashboard, containerization + REST API, then
+exploitation as a deliberate, separately-authorized policy shift). Two
+more sessions since: (1) wrote `FUNCTIONAL_SPEC.md`/`TECHNICAL_SPEC.md`
+and a full hands-on tutorial site (`tutorial/index.html`), committed as
+`ee0eac0`/`859e699`; (2) **this session** — ran a 9-agent parallel
+`total-code-intelligence` full-codebase audit, then implemented fixes for
+every finding it surfaced (6 critical, 4 remaining important, 5
+suggestion-tier — 2 comment-quality findings had already been fixed
+inline before the fix pass began).
 
 ## Current Project State
 
@@ -112,19 +117,22 @@ no downstream changes" design decision held even for this much larger
 agent.
 
 ### Testing Status
-**140/140 tests passing** (`pytest tests/ -v`), no live network required:
-| File | Count |
-|---|---|
-| `test_scope_guard.py` | 18 (was 12 — +6 for exploit-target/resettable enforcement) |
-| `test_exploit_agent.py` | 10 (new) |
-| (all other files) | unchanged from prior session, 112 total |
+**154/154 tests passing** (`pytest tests/ -v`), no live network required.
+As of this session: `test_scope_guard.py` and `test_exploit_agent.py`
+each gained several tests for the audit fixes above (malformed-config
+handling, SQLi/credentials validation, redaction, IPv4/IPv6 edge case);
+`test_infra_analyzer.py` gained the zero-TXT-record regression test;
+`test_report_generator.py` gained a `format_finding_detail` test; new
+`tests/test_orchestrator.py` (previously had zero dedicated test file)
+covers `run_scan()`'s precondition validation.
 
 `test_exploit_agent.py` mocks HTTP via `responses`, same pattern as
 `WebAppAnalyzer`/`ApiAnalyzer` — no real exploitation happens in CI.
 Notably includes a regression test
 (`test_command_injection_not_flagged_when_output_matches_baseline`) for
-the real bug found during live verification (see below) — this test
-would have caught it before it ever reached a live run.
+a real bug found during live verification in the exploitation-design
+session — this test would have caught it before it ever reached a live
+run.
 
 ### Live Verification (this session) — the real payoff
 Manually verified DVWA's actual page structure first (login form fields,
@@ -166,6 +174,143 @@ fail-fast safety check live too: requesting `--agents exploit` against
 `local-juiceshop` (in `authorized_targets` but not
 `authorized_exploit_targets`) failed immediately with a clear error and
 `EXIT_CONFIG_ERROR`, before any request was sent.
+
+### This session — full code-intelligence audit + fix pass
+
+Ran the `total-code-intelligence` skill (FULL mode, 9 parallel review
+agents: bug-hunter, security-auditor, error-handler-auditor,
+test-coverage-analyst, comment-quality, type-design-analyzer,
+code-simplifier, compliance-checker, git-context) against the entire
+codebase (no pending diff — reviewed `master`, commit `859e699`, as it
+stood). 7 of 9 agents hit a Claude session usage limit partway through and
+were resumed via `SendMessage` to their original `agentId`s with context
+on where they'd been cut off; all completed successfully on retry.
+
+**Most significant finding**: `ExploitAgent`'s documented "hard lines" (the
+safety design the entire exploitation feature was built around — see the
+prior session's entry above) were in several places *claimed but not
+structurally enforced*. Two independent agents (test-coverage-analyst and
+security-auditor) converged on the same SQLi validation gap independently,
+which is what made this the top-priority fix.
+
+**Fixed — critical (6)**:
+1. `_run_sqli`'s `union_select`/`from_table` config values were
+   interpolated into the payload with zero validation, so a malicious/
+   careless `scope.yaml` edit could smuggle non-SELECT SQL past the
+   "read-only" hard line. Fixed with `_validate_sqli_config` — a strict
+   allowlist regex (`[A-Za-z0-9_.,\s]+` for columns, `[A-Za-z0-9_.]+` for
+   the table) rejects anything containing `;`, `--`, `/*`, or a keyword
+   outside SELECT/UNION/column syntax, raising before any HTTP request is
+   built. Tests: `test_sqli_rejects_malicious_union_select_...`,
+   `test_sqli_rejects_malicious_from_table_...`.
+2. `ExploitTarget`'s `resettable: true` requirement was only checked in
+   `ScopeGuard._load`, not in the dataclass itself — any other
+   construction path (a test, future code) could bypass it. Added
+   `ExploitTarget.__post_init__` as a backstop that raises
+   `ScopeConfigError` directly. Test:
+   `test_exploit_target_direct_construction_with_resettable_false_rejected`.
+3. The exploit/webapp/api/llm-security agents' step loops only caught
+   `requests.RequestException`, so any other failure (e.g. the new
+   `SqliConfigError`, a `KeyError` from a malformed config) would crash
+   the whole scan instead of being recorded as a finding. Broadened to
+   `except Exception` in all four (matching the pattern already correct in
+   `recon_agent.py`/`infra_analyzer.py`/`code_analyzer.py`).
+4. `ExploitAgent._get`/`_post` logged full request bodies via
+   `log_with_fields`, which persists verbatim to `logs/agent-activity.jsonl`
+   — including plaintext passwords during credential testing. Added
+   `_redact()`, masking `password`/`passwd`/`pwd`/`pass` fields before
+   logging (never before sending). Test: `test_redact_masks_password_...`.
+5. `_run_credentials` defaulted `success_indicator` to `""`, and an empty
+   string is a substring of everything — every login attempt, successful
+   or not, would be flagged `weak-credentials-exploited`. Changed to
+   `cfg["success_indicator"]` (required, `KeyError` if absent, caught by
+   fix #3's broadened exception handling and recorded as a finding rather
+   than silently matching). Test:
+   `test_credentials_missing_success_indicator_is_rejected`.
+6. `src/api.py`'s `require_api_key` compared the bearer token with `!=`,
+   a timing side-channel. Switched to `hmac.compare_digest`.
+
+**Fixed — important (4 remaining; 2 comment-quality ones were already
+fixed inline before this pass)**:
+7. `ai_triage_analyzer.py`'s non-zero-`claude`-exit branch set
+   `result.error` but never called `log_with_fields` (its sibling
+   `except Exception` branch did) — added the missing log call.
+   `orchestrator.py`'s "AI triage did not produce a narrative" print now
+   surfaces `triage_result.error` (falling back to `.findings`) instead of
+   always printing the findings list, which was empty/uninformative on a
+   real failure.
+8. `ScopeGuard._load` let a malformed `scope.yaml` (bad YAML syntax, a
+   target missing `name`/`host`) raise a raw `yaml.YAMLError`/`KeyError`
+   instead of the documented `ScopeConfigError`. Wrapped in try/except,
+   re-raising as `ScopeConfigError` with the offending path. Tests:
+   `test_malformed_yaml_raises_scope_config_error`,
+   `test_authorized_target_missing_host_raises_scope_config_error`,
+   `test_exploit_target_missing_name_raises_scope_config_error`.
+9. `run_scan()` relied on its *callers* (`main()`, `create_scan()`) to
+   validate `code_path`/`exploit_target` were provided before calling it
+   — calling it directly (as a library, or from a future caller) with
+   `"code"`/`"exploit"` in `agent_keys` but the matching value `None`
+   would fail deep inside the agent loop instead of failing fast. Added
+   the same precondition check *inside* `run_scan()` itself
+   (`ValueError`). New `tests/test_orchestrator.py` (previously had zero
+   dedicated test file — flagged separately by the coverage agent).
+12. This `development-status.md` update — it had gone two full sessions
+    (spec docs, tutorial site) without being updated, against this
+    project's own documented convention.
+
+**Fixed — suggestions (5, lower confidence but real)**:
+14. `infra_analyzer.py`'s SPF/DMARC checks only flagged `*-record-missing`
+    when `dig` returned *some* non-matching TXT output — a domain with
+    zero TXT records at all produced no finding either way. Now flags
+    missing in both cases. Test:
+    `test_missing_spf_dmarc_flagged_when_no_txt_records_at_all`.
+15. `ScopeGuard._matches` could raise `TypeError` (uncaught) when a host
+    resolved to a mix of IPv4/IPv6 addresses and was checked against a
+    single-family CIDR scope entry. Now catches `TypeError` alongside
+    `ValueError` per-IP — a family mismatch is just "not a match," not an
+    error. Test: `test_ipv4_cidr_scope_does_not_crash_on_ipv6_resolved_...`.
+16. `ai_triage_analyzer.py`'s prompt embeds scraped target content
+    (page titles, server banners, reflected XSS payloads) verbatim.
+    Added an explicit instruction telling Claude to treat those fields as
+    inert data, never as commands — a low-cost prompt-injection mitigation
+    for a low-severity surface (this is a local triage tool reading the
+    operator's own evidence, not a remotely-exploitable path).
+17. `AgentResult.status` was typed as bare `str`; narrowed to
+    `Literal["ok", "error", "skipped"]` to match what the docstring
+    already claimed.
+18. Dedup cleanup: `_host_from_target` (was duplicated in `webapp_analyzer`/
+    `api_analyzer`/`llm_security_analyzer`) moved to `BaseAgent`. The
+    rate-limit/log/dry-run-guard prelude every agent's `_get`/`_post`
+    reimplemented is now `BaseAgent._prepare_request` (raises
+    `RuntimeError`, translated to `requests.RequestException` at each
+    call site — kept HTTP-library-agnostic since `AiTriageAnalyzer` isn't
+    an HTTP agent at all). `report_generator.py`'s `_severity_for` renamed
+    to public `severity_for` (updated `dashboard.py`'s import and both
+    test files) since it's used cross-module. New
+    `report_generator.format_finding_detail()` replaces three duplicated
+    `k=v, k=v` finding-formatting blocks (two in `report_generator.py`,
+    one in `alerting.py`). `_render_diff_section`'s duplicated New/
+    Resolved blocks collapsed into one loop over
+    `[("New", ...), ("Resolved", ...)]`.
+
+**Deliberately deferred — not fixed this session**: the type-design
+agent's Liskov-substitution finding (`BaseAgent.run(self, target: str)`'s
+abstract signature doesn't match `ExploitAgent.run(exploit_target:
+ExploitTarget)` / `AiTriageAnalyzer.run(evidence: dict)`'s actual
+parameter types) was reported at confidence 82, under "Important Issues."
+Not fixed here: fixing it properly means either a generic `BaseAgent[T]`
+or splitting the abstract method per agent-shape, either of which is a
+real refactor touching every agent file for a type-checker-visibility
+issue, not a runtime bug — fixes #3 and #9 above already close the actual
+behavioral gaps this mismatch could cause (a wrong-type target now fails
+fast with a clear error instead of misbehaving deep in an agent). If a
+type checker (mypy/pyright) is added to CI later, revisit this then.
+
+**Verification**: all fixes have accompanying tests; `pytest tests/ -v`
+green throughout the fix pass (140 → 154 tests as fixes were added). No
+live DVWA re-verification was needed for this pass — every fix is either
+pure validation/logging logic covered by mocked-HTTP tests (matching the
+existing `test_exploit_agent.py` pattern) or a non-behavioral rename/dedup.
 
 ### Known Issues / Limitations
 - Carried forward from prior sessions (nmap/semgrep optional, LLM probe
@@ -253,9 +398,16 @@ dashboard, API auth opt-in with localhost-default bind, container
 - `config/scope.yaml` — now has a working `authorized_exploit_targets`
   entry for `local-dvwa` with all four vuln classes configured and
   live-verified
-- `tests/test_exploit_agent.py` (new, 10 tests); `tests/test_scope_guard.py`
-  extended (+6 tests)
-- `tests/` — 140 tests across 17 files, all passing
+- `tests/` — 154 tests across 18 files (added `tests/test_orchestrator.py`
+  this session), all passing
+- `FUNCTIONAL_SPEC.md`/`TECHNICAL_SPEC.md` (prior session) — not
+  re-verified against this session's fixes; none of the fixes change
+  documented behavior (exit codes, config schema, CLI/API surface are all
+  unchanged — only validation/robustness was added), but worth a pass if
+  either doc is relied on again
+- `tutorial/index.html` (prior session) — Module 9 references
+  `ExploitAgent`'s config schema/behavior, which this session's fixes
+  don't change, so it should still be accurate
 
 ### Dependencies
 No new dependencies this session — `ExploitAgent` uses `requests` and
