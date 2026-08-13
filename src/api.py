@@ -37,7 +37,7 @@ from pydantic import BaseModel
 from src.dashboard import generate_dashboard
 from src.history_store import DEFAULT_DB_PATH
 from src.logging_setup import get_logger
-from src.orchestrator import AGENT_REGISTRY, DEFAULT_REPORTS_DIR, run_scan
+from src.orchestrator import AGENT_REGISTRY, DEFAULT_REPORTS_DIR, EXPLOIT_AGENTS, run_scan
 from src.scope_guard import OutOfScopeError, ScopeConfigError, ScopeGuard
 
 logger = get_logger("api")
@@ -125,9 +125,17 @@ async def create_scan(req: ScanRequest) -> dict[str, Any]:
     if "code" in req.agents and not req.code_path:
         raise HTTPException(status_code=400, detail="code_path is required when 'code' is in agents")
 
+    exploit_target = None
+    if EXPLOIT_AGENTS & set(req.agents):
+        try:
+            exploit_target = guard.resolve_exploit_target(req.target)
+        except OutOfScopeError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+
     result = run_scan(
         guard, authorized_target, req.agents,
-        code_path=req.code_path, execute=req.execute, ai_triage=req.ai_triage,
+        code_path=req.code_path, exploit_target=exploit_target,
+        execute=req.execute, ai_triage=req.ai_triage,
         reports_dir=_reports_dir(), history_db_path=_history_db_path(),
     )
 

@@ -38,6 +38,70 @@ excluded:
 # Requests-per-second style throttle agents must respect against any target.
 max_scan_rate: 5
 
+# Local filesystem paths CodeAnalyzer is allowed to statically scan.
+# Independent of authorized_targets above -- this is "I own this code",
+# not "I'm allowed to scan this network host".
+authorized_code_paths:
+  []
+  # - /path/to/your/project/src
+
+# Targets where live exploitation (ExploitAgent) is authorized. Separate
+# from authorized_targets above -- recon authorization does NOT imply
+# exploitation is authorized. `resettable: true` is required (ScopeGuard
+# refuses to even load this file without it on every entry here) because
+# full exploitation (real data extraction, real command execution) is
+# only justified against a target you can tear down and recreate -- e.g.
+# a disposable Docker container, not a persistent VM with real data.
+#
+# ExploitAgent does NOT discover vulnerabilities -- it executes declared,
+# known techniques against declared, known endpoints listed in
+# known_vulnerabilities below. See README.md's "Exploitation (ExploitAgent)"
+# section for the full schema and the hard lines that are enforced in code
+# regardless of what this config says (no destructive SQL, no arbitrary
+# commands, no credential brute-forcing).
+authorized_exploit_targets:
+  []
+  # - name: local-dvwa
+  #   host: 127.0.0.1
+  #   web_port: 8080
+  #   resettable: true
+  #   notes: "docker container -- docker rm + re-run to reset"
+  #   known_vulnerabilities:
+  #     auth_setup:              # optional: log in before other modules run
+  #       login_path: /login.php
+  #       username_field: username
+  #       password_field: password
+  #       username: admin
+  #       password: password
+  #       csrf_field: user_token
+  #       extra_fields: {Login: Login}
+  #       post_login_requests:
+  #         - path: /security.php
+  #           data: {security: low, seclev_submit: Submit}
+  #     sqli:
+  #       - path: /vulnerabilities/sqli/
+  #         param: id
+  #         union_select: "user,password"   # SELECT-only -- never write/delete
+  #         from_table: users
+  #     xss:
+  #       - path: /vulnerabilities/xss_r/
+  #         param: name
+  #     command_injection:
+  #       - path: /vulnerabilities/exec/
+  #         param: ip
+  #         allowed_commands: [whoami, hostname]  # must be a subset of the
+  #           # hardcoded ALLOWED_COMMANDS in src/agents/exploit_agent.py
+  #     credentials:
+  #       login_path: /login.php
+  #       username_field: username
+  #       password_field: password
+  #       csrf_field: user_token
+  #       extra_fields: {Login: Login}
+  #       success_indicator: "Logout"
+  #       candidates:                       # a handful of common defaults,
+  #         - [admin, password]             # NOT a wordlist/brute-force
+  #         - [admin, admin]
+
 notes: >
   This scope file governs ALL agents in this platform. Only add hosts you
   personally own/operate or are explicitly authorized to test.

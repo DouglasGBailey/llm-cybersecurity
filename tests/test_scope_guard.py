@@ -171,3 +171,98 @@ def test_nonexistent_path_is_not_authorized(tmp_path):
     """)
     guard = ScopeGuard(p)
     assert guard.is_path_authorized(code_dir / "does-not-exist") is False
+
+
+def test_exploit_target_missing_resettable_rejected_at_load(tmp_path):
+    p = write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+        authorized_exploit_targets:
+          - name: local
+            host: 127.0.0.1
+    """)
+    with pytest.raises(ScopeConfigError):
+        ScopeGuard(p)
+
+
+def test_exploit_target_resettable_false_rejected_at_load(tmp_path):
+    p = write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+        authorized_exploit_targets:
+          - name: local
+            host: 127.0.0.1
+            resettable: false
+    """)
+    with pytest.raises(ScopeConfigError):
+        ScopeGuard(p)
+
+
+def test_exploit_target_with_resettable_true_loads_successfully(tmp_path):
+    p = write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+        authorized_exploit_targets:
+          - name: local
+            host: 127.0.0.1
+            resettable: true
+            known_vulnerabilities:
+              sqli:
+                - path: /vuln/
+                  param: id
+    """)
+    guard = ScopeGuard(p)
+    assert len(guard.scope.authorized_exploit_targets) == 1
+    target = guard.scope.authorized_exploit_targets[0]
+    assert target.resettable is True
+    assert target.known_vulnerabilities["sqli"][0]["param"] == "id"
+
+
+def test_resolve_exploit_target_by_name(tmp_path):
+    p = write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+        authorized_exploit_targets:
+          - name: local
+            host: 127.0.0.1
+            resettable: true
+    """)
+    guard = ScopeGuard(p)
+    target = guard.resolve_exploit_target("local")
+    assert target.host == "127.0.0.1"
+
+    with pytest.raises(OutOfScopeError):
+        guard.resolve_exploit_target("not-a-real-target")
+
+
+def test_recon_authorization_does_not_imply_exploit_authorization(tmp_path):
+    p = write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+    """)
+    guard = ScopeGuard(p)
+    guard.authorize("127.0.0.1")  # recon-authorized, should not raise
+
+    with pytest.raises(OutOfScopeError):
+        guard.resolve_exploit_target("local")
+    with pytest.raises(OutOfScopeError):
+        guard.authorize_exploit("127.0.0.1")
+
+
+def test_authorize_exploit_happy_path(tmp_path):
+    p = write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+        authorized_exploit_targets:
+          - name: local
+            host: 127.0.0.1
+            resettable: true
+    """)
+    guard = ScopeGuard(p)
+    guard.authorize_exploit("127.0.0.1")  # should not raise

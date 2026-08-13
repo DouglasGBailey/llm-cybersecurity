@@ -12,7 +12,19 @@ listed** in your `config/scope.yaml`. Only add targets you personally own or
 are explicitly authorized to test (your own lab VMs/containers, an active
 HackTheBox/TryHackMe VPN range, etc).
 
-- No agent performs exploitation, brute force, or denial-of-service actions.
+- The six scanning agents (Recon through LLM Security) perform read-only
+  enumeration and hygiene checks only — no exploitation, no brute force,
+  no denial-of-service.
+- Real exploitation exists in one place, `ExploitAgent`, and is gated far
+  more tightly than everything else: it requires a **separate**
+  `authorized_exploit_targets` entry (being allowed to recon-scan a host
+  does not authorize exploiting it), and that entry must declare
+  `resettable: true` — enforced at scope-file load time, not just
+  documented — because full exploitation (real data extraction, real
+  command execution) is only justified against a target you can tear down
+  and recreate. See "Exploitation (ExploitAgent)" below for the full
+  design, including the hard lines it never crosses regardless of config
+  (no destructive SQL, no arbitrary commands, no credential brute-forcing).
 - Every agent's allowed tools/commands are hard-coded (`allowed_tools`) — an
   LLM directing this platform cannot expand what an agent is permitted to do.
 - Every action is logged to `logs/agent-activity.jsonl`.
@@ -30,6 +42,7 @@ Security Auditor Agent (orchestrator.py)
 ├── Infrastructure Analyzer[working]  TLS cert hygiene, SPF/DMARC/DNSSEC checks
 ├── Code Analyzer          [working]  bandit / semgrep over a local path
 ├── LLM Security Analyzer  [working]  prompt-injection / jailbreak probe suite
+├── Exploit Agent          [working]  config-driven SQLi/XSS/cmd-injection/weak-creds exploitation (opt-in, separately scoped)
 ├── Evidence Collector     [working]  aggregates AgentResult -> evidence.json (+ compliance tags)
 ├── Report Generator       [working]  evidence.json -> Markdown report (+ compliance, diff sections)
 └── AI Triage Analyzer     [working]  evidence.json -> Claude-written narrative (opt-in)
@@ -130,7 +143,7 @@ Live run against an authorized target:
 python -m src.orchestrator --scope config/scope.yaml --target local-dvwa --execute
 ```
 
-Run a subset of agents (available: `recon`, `webapp`, `api`, `infra`, `code`, `llm`):
+Run a subset of agents (available: `recon`, `webapp`, `api`, `infra`, `code`, `llm`, `exploit`):
 
 ```bash
 python -m src.orchestrator --scope config/scope.yaml --target local-dvwa --agents webapp,api --execute
@@ -164,6 +177,105 @@ and looks for common response field names (or OpenAI-style
 `choices[0].message.content`); customize probes (and canary tokens for
 system-prompt-leak detection) in `config/llm_probes.yaml` — see
 `config/llm_probes.example.yaml`.
+
+## Exploitation (ExploitAgent)
+
+Everything above is enumerate-and-flag. `ExploitAgent` is different: it
+proves impact — real SQL injection data extraction, real reflected-XSS
+confirmation, real command execution, real login with weak/default
+credentials — against a target you've separately, explicitly authorized
+for it.
+
+**It does not discover vulnerabilities.** It executes declared, known
+techniques against declared, known endpoints, read from
+`known_vulnerabilities` in a scope.yaml `authorized_exploit_targets`
+entry. Auto-discovery/fuzzing would be a much larger undertaking and
+drifts toward "autonomous hacking tool" — the opposite of this project's
+founding idea of restricted, declarative agents you build yourself rather
+than "ChatGPT, hack this server."
+
+**Authorization is separate and stricter than recon.** Being listed in
+`authorized_targets` (so `webapp`/`api`/etc. can scan a host) does **not**
+authorize `ExploitAgent` against it. A target needs its own
+`authorized_exploit_targets` entry, and that entry **must** set
+`resettable: true` — `ScopeGuard` refuses to even load a scope file where
+an exploit-target entry is missing this. `resettable: true` is not a
+formality: it's the reason full exploitation (real data extraction, real
+command execution) is acceptable here at all — the target is a disposable
+container you can tear down and recreate, not something where a mistake
+has lasting consequences.
+
+```yaml
+authorized_exploit_targets:
+  - name: local-dvwa
+    host: 127.0.0.1
+    web_port: 8080
+    resettable: true          # required -- ScopeGuard rejects the file without this
+    notes: "docker container -- docker rm + re-run to reset"
+    known_vulnerabilities:
+      auth_setup:              # optional: log in (+ follow-up requests) before other modules run
+        login_path: /login.php
+        username_field: username
+        password_field: password
+        username: admin
+        password: password
+        csrf_field: user_token
+        extra_fields: {Login: Login}
+        post_login_requests:
+          - path: /security.php
+            data: {security: low, seclev_submit: Submit}
+      sqli:
+        - path: /vulnerabilities/sqli/
+          param: id
+          union_select: "user,password"   # SELECT-only -- never write/delete
+          from_table: users
+      xss:
+        - path: /vulnerabilities/xss_r/
+          param: name
+      command_injection:
+        - path: /vulnerabilities/exec/
+          param: ip
+          allowed_commands: [whoami, hostname]   # must be a subset of ALLOWED_COMMANDS in code
+      credentials:
+        login_path: /login.php
+        username_field: username
+        password_field: password
+        csrf_field: user_token
+        extra_fields: {Login: Login}
+        success_indicator: "Logout"
+        candidates:                       # a handful of common defaults, NOT a wordlist
+          - [admin, password]
+          - [admin, admin]
+```
+
+**Hard lines that are not config-overridable** (see
+`src/agents/exploit_agent.py` for where these are enforced in code):
+- **SQL injection is read-only.** `union_select`/`from_table` build a
+  `SELECT`/`UNION` payload only — this agent never constructs
+  `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`.
+- **Command injection only ever runs a command from a hardcoded
+  allowlist** (`ALLOWED_COMMANDS` — `whoami`, `id`, `hostname`, `uname -a`,
+  `pwd`). A command in a target's `allowed_commands` config that isn't in
+  that hardcoded set is rejected and never sent — config can *select
+  from* what this agent will attempt, never *expand* it.
+- **Credential testing tries the configured `candidates` and stops at the
+  first success.** This is default/weak-credential confirmation, not a
+  brute-force/wordlist attack — mass credential stuffing risks account
+  lockouts and reads as a DoS-adjacent technique even when authorized.
+
+Run it like any other agent, but note it takes its own
+`--target`-resolved `authorized_exploit_targets` entry, checked *before*
+anything runs:
+
+```bash
+python -m src.orchestrator --scope config/scope.yaml --target local-dvwa --agents exploit --execute
+```
+
+Findings (`sqli-exploited`, `xss-exploited`, `command-injection-exploited`,
+`weak-credentials-exploited`) are all `HIGH` severity and mapped to OWASP
+Top 10 2021 A03 (Injection) / A07 (Auth Failures) in the report like
+everything else — `ReportGenerator`/`EvidenceCollector`/`dashboard.py`
+needed zero changes to support this agent.
 
 Every run writes to `reports/`:
 - `<target-name>-results.json` — raw `AgentResult` list, one per agent run
@@ -386,19 +498,20 @@ source venv/bin/activate
 python -m pytest tests/ -v
 ```
 
-124/124 tests passing as of this build (scope guard: 12, recon agent: 5,
+140/140 tests passing as of this build (scope guard: 18, recon agent: 5,
 web app analyzer: 5, api analyzer: 7, infra analyzer: 9, code analyzer: 7,
-llm security analyzer: 8, evidence collector: 7, report generator: 13, ai
-triage analyzer: 5, history store: 6, diff engine: 6, compliance mapping:
-6, alerting: 8, dashboard: 6, REST API: 14). All tests mock subprocess/
-HTTP/SMTP calls or use a temp SQLite file/scope file/in-process FastAPI
-TestClient — no live network access, installed security tools, a live
-`claude` CLI, an SMTP server, or a running API server are required to run
-the suite.
+llm security analyzer: 8, exploit agent: 10, evidence collector: 7, report
+generator: 13, ai triage analyzer: 5, history store: 6, diff engine: 6,
+compliance mapping: 6, alerting: 8, dashboard: 6, REST API: 14). All tests
+mock subprocess/HTTP/SMTP calls or use a temp SQLite file/scope file/
+in-process FastAPI TestClient — no live network access, installed security
+tools, a live `claude` CLI, an SMTP server, or a running API server are
+required to run the suite. `ExploitAgent`'s tests mock HTTP the same way
+`WebAppAnalyzer`/`ApiAnalyzer`'s do — no real exploitation happens in CI.
 
 ## Adding a new agent
 
-The pattern established by the six scanning agents:
+The pattern established by the scanning agents:
 
 1. Subclass `BaseAgent` (`src/agent_base.py`); `run(target)` must call
    `self.scope_guard.authorize(...)` (or `authorize_path(...)` for a

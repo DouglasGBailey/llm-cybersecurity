@@ -11,6 +11,10 @@ from typing import Any
 SEVERITY_BY_TYPE = {
     "tls-certificate-expired": "high",
     "llm-probe-failed": "high",
+    "sqli-exploited": "high",
+    "xss-exploited": "high",
+    "command-injection-exploited": "high",
+    "weak-credentials-exploited": "high",
     "tls-certificate-expiring-soon": "medium",
     "missing-security-headers": "medium",
     "openapi-no-security-scheme-declared": "medium",

@@ -27,6 +27,7 @@ from src.agents.ai_triage_analyzer import AiTriageAnalyzer
 from src.agents.api_analyzer import ApiAnalyzer
 from src.agents.code_analyzer import CodeAnalyzer
 from src.agents.evidence_collector import EvidenceCollector
+from src.agents.exploit_agent import ExploitAgent
 from src.agents.infra_analyzer import InfraAnalyzer
 from src.agents.llm_security_analyzer import LlmSecurityAnalyzer
 from src.agents.recon_agent import ReconAgent
@@ -36,7 +37,7 @@ from src.alerting import send_alerts
 from src.diff_engine import compute_diff
 from src.history_store import DEFAULT_DB_PATH, HistoryStore
 from src.logging_setup import get_logger
-from src.scope_guard import AuthorizedTarget, OutOfScopeError, ScopeConfigError, ScopeGuard
+from src.scope_guard import AuthorizedTarget, ExploitTarget, OutOfScopeError, ScopeConfigError, ScopeGuard
 
 # Exit codes: 0 = success/no new findings, 1 = scope/config/argument error,
 # 3 = success but new findings appeared since the last run for this target
@@ -52,10 +53,15 @@ AGENT_REGISTRY = {
     "infra": InfraAnalyzer,
     "code": CodeAnalyzer,
     "llm": LlmSecurityAnalyzer,
+    "exploit": ExploitAgent,
 }
 # Agents that take a local filesystem path (authorized via
 # scope.yaml's authorized_code_paths) instead of a network target.
 PATH_BASED_AGENTS = {"code"}
+# Agents that require a *separate* authorized_exploit_targets entry
+# (with resettable: true) -- recon authorization does not imply
+# exploitation is authorized. See src/scope_guard.py.
+EXPLOIT_AGENTS = {"exploit"}
 
 DEFAULT_REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
 
@@ -67,6 +73,7 @@ def run_scan(
     authorized_target: AuthorizedTarget,
     agent_keys: list[str],
     code_path: str | None = None,
+    exploit_target: ExploitTarget | None = None,
     execute: bool = False,
     ai_triage: bool = False,
     reports_dir: Path = DEFAULT_REPORTS_DIR,
@@ -89,6 +96,8 @@ def run_scan(
         agent = agent_cls(guard, dry_run=dry_run)
         if agent_key in PATH_BASED_AGENTS:
             agent_target = code_path
+        elif agent_key in EXPLOIT_AGENTS:
+            agent_target = exploit_target
         else:
             agent_target = authorized_target.host
             if agent_key in ("webapp", "api", "llm") and authorized_target.web_port:
@@ -258,9 +267,18 @@ def main(argv: list[str] | None = None) -> int:
         print("--code-path is required when 'code' is in --agents", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
+    exploit_target = None
+    if EXPLOIT_AGENTS & set(requested_agents):
+        try:
+            exploit_target = guard.resolve_exploit_target(args.target)
+        except OutOfScopeError as e:
+            print(f"Exploit target error: {e}", file=sys.stderr)
+            return EXIT_CONFIG_ERROR
+
     result = run_scan(
         guard, authorized_target, requested_agents,
-        code_path=args.code_path, execute=args.execute, ai_triage=args.ai_triage,
+        code_path=args.code_path, exploit_target=exploit_target,
+        execute=args.execute, ai_triage=args.ai_triage,
     )
     return result["exit_code"]
 

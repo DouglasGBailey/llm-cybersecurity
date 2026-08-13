@@ -77,6 +77,21 @@ COMPLIANCE_MAP: dict[str, list[dict[str, str]]] = {
     "llm-probe-failed": [
         {"framework": "OWASP Top 10 for LLM Applications", "control": "LLM01 - Prompt Injection"},
     ],
+
+    # --- Confirmed exploitation (ExploitAgent) -- proven impact, not just a
+    # detected weakness, but the OWASP category is the same underlying class ---
+    "sqli-exploited": [
+        {"framework": "OWASP Top 10 2021", "control": "A03:2021 - Injection"},
+    ],
+    "xss-exploited": [
+        {"framework": "OWASP Top 10 2021", "control": "A03:2021 - Injection"},
+    ],
+    "command-injection-exploited": [
+        {"framework": "OWASP Top 10 2021", "control": "A03:2021 - Injection"},
+    ],
+    "weak-credentials-exploited": [
+        {"framework": "OWASP Top 10 2021", "control": "A07:2021 - Identification and Authentication Failures"},
+    ],
 }
 
 
