@@ -144,7 +144,7 @@ and looks for common response field names (or OpenAI-style
 system-prompt-leak detection) in `config/llm_probes.yaml` — see
 `config/llm_probes.example.yaml`.
 
-Every run writes three files to `reports/`:
+Every run writes to `reports/`:
 - `<target-name>-results.json` — raw `AgentResult` list, one per agent run
 - `<target-name>-evidence.json` — `EvidenceCollector`'s deduplicated bundle
   (findings merged across agents by content, with per-type/per-agent counts)
@@ -152,6 +152,8 @@ Every run writes three files to `reports/`:
   report, findings grouped by a simple severity heuristic (high/medium/low/
   info — see `SEVERITY_BY_TYPE` in `src/agents/report_generator.py`), plus
   a raw evidence appendix
+- `<target-name>-diff.json` (on `--execute` runs only) — what changed since
+  the last run for this target; see "Scheduled Scanning & Diffing" below
 
 Add `--ai-triage` to also get `<target-name>-ai-triage.md` — a
 Claude-written prioritized narrative over the same evidence bundle (see
@@ -165,6 +167,70 @@ python -m src.orchestrator --scope config/scope.yaml --target local-dvwa --agent
 Full activity log (every tool/request invocation, with timestamps) is at
 `logs/agent-activity.jsonl`.
 
+## Scheduled Scanning & Diffing
+
+Every `--execute` run is recorded in a local SQLite history
+(`data/history.db`, one row per run per target) and diffed against that
+target's most recent prior run. This is what makes running the tool
+repeatedly actually useful — instead of re-reading a full report every
+time, you get a `<target-name>-diff.json` and a "Changes Since Last Scan"
+section in `report.md` showing only what's new or resolved. Dry runs don't
+touch history — they produce no real findings, so diffing them would
+corrupt the baseline for real scans.
+
+The very first run for a target has nothing to diff against
+(`is_first_run: true` in the diff, and no "Changes Since Last Scan" section
+in the report) — that run establishes the baseline.
+
+**Exit codes** (`src/orchestrator.py`) are how a scheduler knows whether to
+alert:
+| Code | Meaning |
+|---|---|
+| `0` | Success, no new findings since last run (or this was the first run) |
+| `1` | Scope/config/argument error |
+| `3` | Success, but **new findings appeared** since the last run |
+
+There's no built-in scheduler daemon — the orchestrator stays a one-shot
+CLI, and you run it on a schedule with cron or systemd, using
+`scripts/run-scheduled-scan.sh` as the entry point (it activates the venv
+and propagates the exit code):
+
+```bash
+# crontab -e — daily at 6am, mail on exit code 3 (new findings) via cron's default behavior
+0 6 * * * /path/to/llm-cybersecurity/scripts/run-scheduled-scan.sh local-dvwa >> /path/to/llm-cybersecurity/logs/cron.log 2>&1 || echo "New findings detected" | mail -s "Scan alert: local-dvwa" you@example.com
+```
+
+Or with systemd (`~/.config/systemd/user/dvwa-scan.service` +
+`dvwa-scan.timer`):
+
+```ini
+# dvwa-scan.service
+[Unit]
+Description=Scheduled security scan of local-dvwa
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/llm-cybersecurity/scripts/run-scheduled-scan.sh local-dvwa
+```
+```ini
+# dvwa-scan.timer
+[Unit]
+Description=Run dvwa-scan.service daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+Then check `systemctl --user status dvwa-scan.service` after a run — a
+`Main PID exited, code=exited, status=3` means new findings appeared, which
+you can hook into `OnFailure=` for a notification unit.
+
+`data/` is gitignored — it's per-installation scan history of your
+specific targets, not something to commit.
+
 ## Testing
 
 ```bash
@@ -172,12 +238,13 @@ source venv/bin/activate
 python -m pytest tests/ -v
 ```
 
-68/68 tests passing as of this build (scope guard: 12, recon agent: 5, web
+84/84 tests passing as of this build (scope guard: 12, recon agent: 5, web
 app analyzer: 5, api analyzer: 7, infra analyzer: 9, code analyzer: 7, llm
-security analyzer: 8, evidence collector: 5, report generator: 5, ai
-triage analyzer: 5). All tests mock subprocess/HTTP calls — no live
-network access or installed security tools (including no live `claude`
-CLI calls) are required to run the suite.
+security analyzer: 8, evidence collector: 5, report generator: 9, ai
+triage analyzer: 5, history store: 6, diff engine: 6). All tests mock
+subprocess/HTTP calls or use a temp SQLite file — no live network access
+or installed security tools (including no live `claude` CLI calls) are
+required to run the suite.
 
 ## Adding a new agent
 

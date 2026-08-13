@@ -26,8 +26,17 @@ from src.agents.llm_security_analyzer import LlmSecurityAnalyzer
 from src.agents.recon_agent import ReconAgent
 from src.agents.report_generator import ReportGenerator
 from src.agents.webapp_analyzer import WebAppAnalyzer
+from src.diff_engine import compute_diff
+from src.history_store import HistoryStore
 from src.logging_setup import get_logger
 from src.scope_guard import OutOfScopeError, ScopeConfigError, ScopeGuard
+
+# Exit codes: 0 = success/no new findings, 1 = scope/config/argument error,
+# 3 = success but new findings appeared since the last run for this target
+# (the hook cron/systemd/CI use to alert -- see scripts/run-scheduled-scan.sh).
+EXIT_OK = 0
+EXIT_CONFIG_ERROR = 1
+EXIT_NEW_FINDINGS = 3
 
 AGENT_REGISTRY = {
     "recon": ReconAgent,
@@ -89,22 +98,22 @@ def main(argv: list[str] | None = None) -> int:
         guard = ScopeGuard(args.scope)
     except ScopeConfigError as e:
         print(f"Scope configuration error: {e}", file=sys.stderr)
-        return 1
+        return EXIT_CONFIG_ERROR
 
     try:
         authorized_target = guard.resolve_target(args.target)
     except OutOfScopeError as e:
         print(f"Target error: {e}", file=sys.stderr)
-        return 1
+        return EXIT_CONFIG_ERROR
 
     requested_agents = [a.strip() for a in args.agents.split(",") if a.strip()]
     unknown = [a for a in requested_agents if a not in AGENT_REGISTRY]
     if unknown:
         print(f"Unknown agent(s): {unknown}. Available: {list(AGENT_REGISTRY)}", file=sys.stderr)
-        return 1
+        return EXIT_CONFIG_ERROR
     if "code" in requested_agents and not args.code_path:
         print("--code-path is required when 'code' is in --agents", file=sys.stderr)
-        return 1
+        return EXIT_CONFIG_ERROR
 
     dry_run = not args.execute
     mode = "DRY-RUN (no actions executed)" if dry_run else "EXECUTE (live actions)"
@@ -153,7 +162,30 @@ def main(argv: list[str] | None = None) -> int:
     evidence_path.write_text(json.dumps(evidence, indent=2))
     print(f"Evidence bundle written to {evidence_path}")
 
-    report = ReportGenerator().generate(evidence)
+    diff = None
+    if not dry_run:
+        # dry-run produces no real findings, so history/diffing is skipped --
+        # recording a dry-run's (empty/placeholder) findings as a "run" would
+        # corrupt the history used for diffing real scans against each other.
+        history = HistoryStore()
+        previous_run = history.get_previous_run(authorized_target.name)
+        diff = compute_diff(
+            previous_findings=previous_run["findings"] if previous_run else [],
+            current_findings=evidence["findings"],
+            is_first_run=previous_run is None,
+        )
+        history.save_run(authorized_target.name, evidence["generated_at"], evidence["findings"])
+
+        diff_path = reports_dir / f"{authorized_target.name}-diff.json"
+        diff_path.write_text(json.dumps(diff, indent=2))
+        print(f"Diff written to {diff_path}")
+        if diff["is_first_run"]:
+            print("  first run for this target -- no prior history to compare against")
+        else:
+            print(f"  {len(diff['new_findings'])} new, {len(diff['resolved_findings'])} resolved, "
+                  f"{len(diff['unchanged_findings'])} unchanged since last run")
+
+    report = ReportGenerator().generate(evidence, diff=diff)
     report_path = reports_dir / f"{authorized_target.name}-report.md"
     report_path.write_text(report)
     print(f"Report written to {report_path}")
@@ -177,7 +209,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"AI triage did not produce a narrative: {triage_result.findings}")
 
-    return 0
+    if diff is not None and diff["has_new_findings"]:
+        return EXIT_NEW_FINDINGS
+    return EXIT_OK
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from src.agent_base import AgentResult
 from src.agents.evidence_collector import EvidenceCollector
 from src.agents.report_generator import ReportGenerator, _severity_for
+from src.diff_engine import compute_diff
 
 
 def make_result(agent_name, target, findings):
@@ -71,3 +72,47 @@ def test_report_findings_grouped_by_severity_order():
     low_idx = report.index("### LOW")
     info_idx = report.index("### INFO")
     assert high_idx < medium_idx < low_idx < info_idx
+
+
+def test_no_diff_section_when_diff_not_passed():
+    evidence = EvidenceCollector().collect([])
+    report = ReportGenerator().generate(evidence)
+    assert "## Changes Since Last Scan" not in report
+
+
+def test_no_diff_section_on_first_run():
+    evidence = EvidenceCollector().collect([])
+    diff = compute_diff([], [], is_first_run=True)
+    report = ReportGenerator().generate(evidence, diff=diff)
+    assert "## Changes Since Last Scan" not in report
+
+
+def test_diff_section_shows_new_and_resolved_findings():
+    results = [make_result("webapp-analyzer", "127.0.0.1", [{"type": "open-port", "port": 443}])]
+    evidence = EvidenceCollector().collect(results)
+    diff = compute_diff(
+        previous_findings=[{"type": "open-port", "port": 80}],
+        current_findings=[{"type": "open-port", "port": 443}],
+        is_first_run=False,
+    )
+    report = ReportGenerator().generate(evidence, diff=diff)
+
+    assert "## Changes Since Last Scan" in report
+    assert "### New (1)" in report
+    assert "port=443" in report
+    assert "### Resolved (1)" in report
+    assert "port=80" in report
+
+
+def test_diff_section_no_changes_message_when_nothing_changed():
+    evidence = EvidenceCollector().collect([])
+    diff = compute_diff(
+        previous_findings=[{"type": "open-port", "port": 80}],
+        current_findings=[{"type": "open-port", "port": 80}],
+        is_first_run=False,
+    )
+    report = ReportGenerator().generate(evidence, diff=diff)
+
+    assert "## Changes Since Last Scan" in report
+    assert "No changes" in report
+    assert "1 finding(s) unchanged" in report

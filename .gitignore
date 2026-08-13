@@ -4,5 +4,6 @@ __pycache__/
 .pytest_cache/
 logs/
 reports/
+data/
 config/scope.yaml
 config/llm_probes.yaml

@@ -2,82 +2,81 @@
 
 ## Last Updated
 **Date**: 2026-08-13
-**Session Duration**: Multi-session build (6 sessions in one day)
-**Claude Code Session**: Platform complete — all 6 scanning agents + Evidence Collector + Report Generator implemented, tested, and live-verified; then added AiTriageAnalyzer (the one genuinely AI-powered, opt-in component) after user asked "in what ways is it AI-powered?"
+**Session Duration**: Multi-session build (7 sessions in one day)
+**Claude Code Session**: Full platform built (6 scanning agents + Evidence
+Collector + Report Generator + opt-in AI Triage), then extended with
+scheduled scanning + diffing (SQLite run history, new/resolved-finding
+detection, exit-code-based alerting) as the first step toward commercial
+viability.
 
 ## Current Project State
 
-### What's Working — the platform is feature-complete
-All planned components from the original architecture are implemented,
-unit-tested, and live-verified against a real local lab:
+### What's Working — feature-complete platform + scheduled scanning
+All planned components are implemented, unit-tested, and live-verified
+against a real local lab (DVWA container):
 
-- **`ScopeGuard`** (`src/scope_guard.py`) — the safety backbone. Two
-  independent scope lists: `authorized_targets` (network, IP/hostname/CIDR,
-  with exclusions) and `authorized_code_paths` (local filesystem, for
-  `CodeAnalyzer`). Nothing runs against anything not explicitly listed.
-- **`BaseAgent`** (`src/agent_base.py`) — allowlisted-tool subprocess
-  execution (no `shell=True`, timeout-enforced), rate limiting per
-  `scope.yaml`'s `max_scan_rate`, dry-run mode, uniform `AgentResult`.
-- **`ReconAgent`** — dig + whois + capped nmap (`-sV --script=default
-  --top-ports 100`). Degrades gracefully if `nmap` isn't installed.
-- **`WebAppAnalyzer`** — missing security headers, server banner,
-  robots.txt disallow list, generator meta tag / page title fingerprinting.
-- **`ApiAnalyzer`** — OpenAPI/Swagger spec discovery, missing-security-scheme
-  flagging, GraphQL introspection detection, verbose-error-page detection.
-- **`InfraAnalyzer`** — TLS cert expiry inspection (via `cryptography`, not
-  `openssl` subprocess) + SPF/DMARC/DNSSEC checks via `dig`. TLS check
-  **only runs when a target has `tls_port` explicitly set** — never
-  guesses a port (see "Key lesson learned" below).
-- **`CodeAnalyzer`** — static analysis of a local directory via `bandit`
-  (required) + `semgrep` (optional). Path-based, not network-based —
-  authorized via `authorized_code_paths`.
-- **`LlmSecurityAnalyzer`** — 3 built-in (config-overridable via
-  `config/llm_probes.yaml`) harmless prompt-injection/jailbreak probes,
-  checked against a canary fail-marker string. For testing your own LLM
-  app, not third-party models.
-- **`EvidenceCollector`** (`src/agents/evidence_collector.py`) — aggregates
-  an orchestrator run's `AgentResult` list into a deduplicated evidence
-  bundle (identical findings from different agents merged, `seen_by`
-  tracked), with per-type/per-agent summary counts.
-- **`ReportGenerator`** (`src/agents/report_generator.py`) — renders the
-  evidence bundle as Markdown, findings grouped by a severity heuristic
-  (high/medium/low/info — see `SEVERITY_BY_TYPE`), plus a raw JSON
-  appendix.
-- **`AiTriageAnalyzer`** (`src/agents/ai_triage_analyzer.py`) — the ONE
-  genuinely AI-powered component. Shells out to the `claude` CLI with the
-  evidence bundle, asking for a prioritized triage narrative (top
-  priorities, remediation order, cross-finding patterns, overall
-  assessment). Opt-in via `--ai-triage` on the orchestrator (costs Claude
-  usage, sends evidence to Anthropic's API). Output always written to its
-  own `<target>-ai-triage.md` file with an explicit AI-GENERATED
-  disclaimer — never blended into the deterministic `report.md`. See
-  "Why AiTriageAnalyzer exists" below for the context that prompted it.
-- **`orchestrator.py`** — CLI entry point (`python -m src.orchestrator
-  --scope ... --target ... [--agents recon,webapp,api,infra,code,llm]
-  [--code-path PATH] [--execute] [--ai-triage]`). Dry-run by default. After
-  the agent loop, always writes three files to `reports/`:
-  `<target>-results.json`, `<target>-evidence.json`, `<target>-report.md`,
-  plus `<target>-ai-triage.md` if `--ai-triage` is passed.
-- Structured JSON logging (`logs/agent-activity.jsonl`) via
-  `src/logging_setup.py` — every tool/request invocation with timestamps.
+**Scanning agents** (all subclass `BaseAgent`, `src/agent_base.py`, all
+scope-checked via `ScopeGuard` before touching anything):
+- `ReconAgent` — dig + whois + capped nmap. Degrades gracefully if `nmap`
+  isn't installed.
+- `WebAppAnalyzer` — missing security headers, server banner, robots.txt,
+  fingerprinting.
+- `ApiAnalyzer` — OpenAPI/Swagger discovery, GraphQL introspection,
+  verbose-error detection.
+- `InfraAnalyzer` — TLS cert expiry (via `cryptography`) + SPF/DMARC/DNSSEC.
+  TLS check **only runs with an explicit `tls_port`** — never guesses a
+  port (see "Key lesson learned" below, still the platform's most
+  important safety precedent).
+- `CodeAnalyzer` — bandit (required) + semgrep (optional) over a local
+  path, authorized via a separate `authorized_code_paths` scope list.
+- `LlmSecurityAnalyzer` — 3 built-in (config-overridable) prompt-injection/
+  jailbreak probes against a user-owned LLM app endpoint.
 
-### Why AiTriageAnalyzer exists
-After the platform was otherwise complete, the user asked "in what ways is
-it AI-powered?" — a fair challenge, since every agent up to that point
-(including `LlmSecurityAnalyzer`, despite its name) is deterministic
-rule-based code with zero LLM calls. The honest answer was: none of the
-scanning/aggregation/reporting logic is AI-powered; only the human+Claude-
-Code loop driving the CLI from outside counted as "AI." The user chose
-option 1 (an LLM-powered triage/summarization step) and specified it
-should use Claude Code itself (the `claude` CLI) rather than a raw
-Anthropic API key — since this environment already has `claude`
-installed/authenticated, that avoids a second credential to manage and
-keeps the "Claude Code building Claude Code-adjacent tooling" framing
-consistent with the rest of the session.
+**Aggregation & reporting** (not scanning agents — consume `AgentResult`
+lists directly, no scope/network/tool concerns):
+- `EvidenceCollector` (`src/agents/evidence_collector.py`) — deduplicates
+  findings across agents by content, per-type/per-agent summary counts.
+- `ReportGenerator` (`src/agents/report_generator.py`) — Markdown report,
+  findings grouped by severity heuristic, **plus a "Changes Since Last
+  Scan" section when a diff is passed** (new this session).
+- `AiTriageAnalyzer` (`src/agents/ai_triage_analyzer.py`) — the one
+  genuinely AI-powered piece. Shells out to the `claude` CLI for a
+  prioritized narrative. Opt-in (`--ai-triage`), output always in its own
+  clearly-labeled file, never blended into the deterministic report.
+
+**Scheduled scanning + diffing** (new this session):
+- `HistoryStore` (`src/history_store.py`) — SQLite-backed
+  (`data/history.db`, gitignored), one row per run per target
+  (`target_name`, `timestamp`, `findings_json`). `save_run`,
+  `get_previous_run`, `get_run_history`.
+- `diff_engine.compute_diff` (`src/diff_engine.py`) — pure function,
+  content-based finding identity (same approach `EvidenceCollector` uses,
+  minus `seen_by` since which agent saw something isn't part of a
+  finding's identity across runs). Returns `new_findings`,
+  `resolved_findings`, `unchanged_findings`, `has_new_findings`.
+  `has_new_findings` is deliberately `False` on the first run for a target
+  (nothing to compare against yet — no false alert on the baseline).
+- `orchestrator.py` — on every `--execute` run (not dry-run — dry-run
+  produces no real findings and would corrupt the baseline), fetches the
+  previous run, computes the diff, saves the current run, writes
+  `reports/<target>-diff.json`, and passes the diff into
+  `ReportGenerator`. Exit codes: `0` = success/no new findings/first run,
+  `1` = scope/config/argument error (unchanged from before), `3` = success
+  but new findings appeared since last run — the hook for alerting.
+- `scripts/run-scheduled-scan.sh` — thin wrapper for cron/systemd (no
+  built-in scheduler daemon by design): activates venv, runs the
+  orchestrator with `--execute`, propagates the exit code.
+
+**Core infrastructure** (unchanged this session):
+- `ScopeGuard` (`src/scope_guard.py`) — two independent scope lists:
+  `authorized_targets` (network) and `authorized_code_paths` (filesystem).
+- `BaseAgent` (`src/agent_base.py`) — allowlisted-tool subprocess
+  execution, rate limiting, dry-run mode, uniform `AgentResult`.
+- Structured JSON logging (`logs/agent-activity.jsonl`).
 
 ### Testing Status
-**68/68 tests passing** (`pytest tests/ -v`), no live network, installed
-security tools, or live `claude` CLI calls required to run the suite:
+**84/84 tests passing** (`pytest tests/ -v`), no live network, installed
+security tools, or live `claude` CLI calls required:
 | File | Count |
 |---|---|
 | `test_scope_guard.py` | 12 |
@@ -89,195 +88,157 @@ security tools, or live `claude` CLI calls required to run the suite:
 | `test_llm_security_analyzer.py` | 8 |
 | `test_ai_triage_analyzer.py` | 5 |
 | `test_evidence_collector.py` | 5 |
-| `test_report_generator.py` | 5 |
+| `test_report_generator.py` | 9 (was 5 — +4 for the diff section) |
+| `test_history_store.py` | 6 (new) |
+| `test_diff_engine.py` | 6 (new) |
 
-Recon/infra tests mock `subprocess.run`; webapp/api/llm tests mock HTTP via
-`responses`; infra's TLS check is tested via `patch.object(_fetch_peer_cert)`
-with real self-signed certs built via `cryptography`; evidence/report tests
-are pure-function, no mocking needed; ai_triage tests mock `subprocess.run`
-the same way recon does (the `claude` CLI is just another allowlisted
-binary as far as `BaseAgent._run_tool` is concerned).
+`test_history_store.py` uses a real temp SQLite file (via `tmp_path`), not
+mocks — genuinely exercises the DB layer. `test_diff_engine.py` is pure
+function tests, no I/O.
 
-### Live Verification
-A DVWA container (`llm-cybersec-dvwa`, `vulnerables/web-dvwa`, port 8080)
-runs as the standing local lab target (`config/scope.yaml`'s `local-dvwa`
-entry). Full platform run confirmed end-to-end:
-```
-python -m src.orchestrator --scope config/scope.yaml --target local-dvwa \
-  --agents recon,webapp,api,infra,llm --execute
-```
-produced real findings (missing security headers, Apache version banner,
-DNS resolution, graceful `nmap`/TLS/API-surface absence handling) and all
-three output files (`results.json`, `evidence.json`, `report.md`) —
-`report.md` correctly grouped findings by severity and deduplicated
-nothing spurious. `CodeAnalyzer` was separately run live against this
-project's own `src/` (an `authorized_code_paths` self-scan) and found 2
-real bandit findings (subprocess-usage flags, expected/mitigated).
+### Live Verification (this session — scheduled scanning + diffing)
+Ran a 4-run cycle against `local-dvwa` with a fresh `data/history.db`:
+1. **Run 1** (`webapp,infra`): `is_first_run: true`, exit code `0`. Baseline
+   established (5 findings recorded).
+2. **Run 2** (same agents, unchanged target): `0 new, 0 resolved, 5
+   unchanged`, exit code `0`.
+3. **Run 3** (added `code` agent scanning this project's own `src/`): `3
+   new, 0 resolved, 5 unchanged`, **exit code `3`** — correctly detected
+   the 3 new bandit/tool-unavailable findings, and the report's "Changes
+   Since Last Scan" section correctly listed them.
+4. **Run 4** (via `scripts/run-scheduled-scan.sh`, back to `webapp,infra`
+   only): `0 new, 3 resolved, 5 unchanged`, exit code `0` — confirmed
+   resolved-finding detection (the 3 code findings disappeared since `code`
+   wasn't run) and confirmed the wrapper script propagates the
+   orchestrator's exit code correctly. Also confirmed resolved-only diffs
+   don't trigger exit code 3 (only *new* findings alert, by design).
 
-Then re-ran with `--ai-triage` added:
-```
-python -m src.orchestrator --scope config/scope.yaml --target local-dvwa \
-  --agents recon,webapp,api,infra,llm --execute --ai-triage
-```
-This made a real `claude -p` call against the actual evidence bundle. The
-narrative it produced was genuinely good: correctly identified DVWA as a
-deliberately-vulnerable app that shouldn't be network-reachable outside a
-lab, correlated missing-headers + no-TLS + outdated-Apache-banner into one
-coherent "under-hardened target" story, flagged the `nmap`-unavailable gap
-as reducing recon confidence, and correctly noted the LLM/API checks came
-back clean. Written to `reports/local-dvwa-ai-triage.md` with the
-AI-GENERATED disclaimer comment at the top.
+All four runs' `diff.json` and `report.md` output inspected directly and
+matched expectations exactly.
 
-### Key lesson learned this build (codified as a standing rule)
+### Key lesson learned (still the platform's standing safety rule)
 **Never let an agent default/guess a port, path, or endpoint that could
 resolve to something outside the intended target on a shared host.**
 `InfraAnalyzer`'s TLS check originally defaulted to port 443; live-tested
-against `local-dvwa` (`127.0.0.1`, DVWA is plain HTTP on 8080), it silently
-connected to and reported the *real* certificate of a completely unrelated
-service also listening on `127.0.0.1:443` on this shared dev host. Fixed
-by requiring `tls_port` to be explicit in `scope.yaml` — an unset port
-means "skip the check," never "assume a default." A regression test
-(`test_no_port_given_skips_tls_check_without_guessing`) guards this. Any
-future agent needing a port/path the scope entry doesn't already specify
-must require it explicitly or skip with a recorded reason.
+against `local-dvwa` on this shared dev host, it silently connected to and
+reported the *real* certificate of a completely unrelated service also on
+`127.0.0.1:443`. Fixed by requiring `tls_port` to be explicit in
+`scope.yaml`. This remains the reference incident for "why we're careful
+about defaults" whenever a new agent or feature touches ports/paths.
 
 ### Known Issues / Limitations
-- `nmap` is not installed on this dev machine — `ReconAgent`'s port/service
-  scan step has not been live-tested with a real nmap run here (only
-  `dig`/`whois` have). Install `nmap` before relying on that step live.
-- `semgrep` is optional and not installed — `CodeAnalyzer`'s bandit path is
-  the one that's been live-verified; semgrep's `tool-unavailable`
-  graceful-degradation path is tested but not exercised with a real
-  semgrep run.
+- `nmap` and `semgrep` are optional/not installed on this dev machine —
+  their code paths are tested via mocks but not exercised with real binary
+  runs here.
 - `LlmSecurityAnalyzer`'s fail-marker matching is a simple substring
-  heuristic (documented limitation) — for real system-prompt-leak testing,
-  plant a unique canary token in your app's actual system prompt and use
-  that as a `fail_marker` in `config/llm_probes.yaml` rather than relying
-  on generic phrasing.
-- `EvidenceCollector`'s deduplication is exact-content-match only (same
-  `type` + all other fields identical across agents) — near-duplicate
-  findings with slightly different detail (e.g. two agents phrasing the
-  same fact differently) won't be merged. Acceptable for this build; a
-  future improvement could dedupe by `(type, key_fields)` instead of full
-  content equality.
+  heuristic — use a real canary token for reliable system-prompt-leak
+  detection (documented in `config/llm_probes.example.yaml`).
+- `EvidenceCollector`'s dedup is exact-content-match only — near-duplicate
+  findings phrased slightly differently across agents won't merge.
+- **No alerting integration yet** — scheduled scanning ends at "exit code
+  3 + a diff file." Wiring that into email/Slack/Jira is deliberately
+  deferred (see "What's Next").
+- **No web dashboard, no compliance framework mapping, no multi-tenancy**
+  — all flagged in the original "what would make this commercially viable"
+  discussion as separate, larger pieces of work not started yet.
 
 ## Architecture Decisions
-- **Scope file as sole authority**: `ScopeGuard` is the only code path that
-  can authorize a target (network) or path (code); agents/orchestrator
-  never make their own scope decisions.
-- **Hard per-agent tool allowlists**: `BaseAgent._run_tool()` raises
-  `DisallowedToolError` for any binary not in that agent's `allowed_tools`.
-  Enforced in code, not just convention.
-- **No `shell=True` anywhere**: all subprocess calls use list-form args.
-- **Dry-run default**: orchestrator requires an explicit `--execute` flag.
-- **Sequential agent execution**: not parallel, to keep aggregate request
-  rate against lab targets low and predictable.
-- **No default ports/paths that could resolve outside the target** — see
-  "Key lesson learned" above.
-- **Two independent scope lists, matched to two different kinds of claim**:
-  `authorized_targets` (network) vs. `authorized_code_paths` (filesystem)
-  — "I'm allowed to scan this host" and "I own this codebase" are
-  different authorizations and shouldn't be conflatable.
-- **Evidence/Report generation is generic over `AgentResult.findings`**:
-  `EvidenceCollector`/`ReportGenerator` don't know about specific agents —
-  a new agent needs zero changes to either to have its findings show up
-  correctly in reports (only an optional `SEVERITY_BY_TYPE` entry if a
-  non-default severity is wanted).
-- **AI-generated content is opt-in and never unlabeled**: `AiTriageAnalyzer`
-  only runs with `--ai-triage`, and its output always goes to a separate
-  file (`<target>-ai-triage.md`) with an explicit disclaimer comment at the
-  top — it is never merged into the deterministic `report.md` in a way that
-  could make AI-generated text look like tool output. Provenance stays
-  unambiguous.
-- **Use the `claude` CLI, not a raw API key**: `AiTriageAnalyzer` shells out
-  to `claude -p` rather than calling the Anthropic API directly. In a
-  Claude Code environment `claude` is already installed and authenticated,
-  so this avoids managing a second credential and reuses the allowlisted-
-  subprocess pattern already established by `ReconAgent`/`CodeAnalyzer`.
+- **Scope file as sole authority**; **hard per-agent tool allowlists**; **no
+  `shell=True` anywhere**; **dry-run default**; **sequential agent
+  execution**; **no default ports/paths that could resolve outside the
+  target**; **two independent scope lists** (network vs. filesystem);
+  **evidence/report generation generic over `AgentResult.findings`**; **AI-
+  generated content is opt-in and never unlabeled** — all established in
+  prior sessions, unchanged.
+- **History/diffing skipped in dry-run mode**: dry-run agents produce
+  placeholder/skip findings, not real data — recording those as a "run"
+  would poison the baseline that diffing depends on. History only updates
+  on `--execute`.
+- **Diff identity strips `seen_by`**: `EvidenceCollector` tracks which
+  agent(s) observed each finding, but that's run-specific metadata, not
+  part of what makes two findings "the same finding" across time — a
+  finding newly co-observed by a second agent shouldn't register as "new."
+- **First run never alerts**: `has_new_findings` is hardcoded `False` when
+  `is_first_run` is true, even though every finding is technically new —
+  there's no baseline yet to meaningfully call something "new," and
+  alerting on every target's first-ever scan would be noise, not signal.
+- **New findings only, not resolved findings, trigger exit code 3**: a
+  finding disappearing is good news, not something to page anyone about.
+  Both are recorded in the diff either way — just not both alert-worthy.
+- **No scheduler daemon**: the orchestrator stays one-shot; cron/systemd
+  own the schedule via `scripts/run-scheduled-scan.sh`. Chosen explicitly
+  over building a long-running Python process, to avoid a second thing
+  that needs to be kept running/monitored.
 
 ## File Structure Status
 - `src/scope_guard.py`, `src/agent_base.py`, `src/logging_setup.py`,
-  `src/orchestrator.py` — core
+  `src/orchestrator.py`, `src/history_store.py`, `src/diff_engine.py` —
+  core
 - `src/agents/{recon_agent,webapp_analyzer,api_analyzer,infra_analyzer,
   code_analyzer,llm_security_analyzer,evidence_collector,
   report_generator,ai_triage_analyzer}.py` — all 9 implemented, no stubs
-  remain
+- `scripts/run-scheduled-scan.sh` — cron/systemd entry point (new)
 - `config/scope.yaml` — `local-dvwa` target → live `llm-cybersec-dvwa`
-  container, `web_port: 8080`, `tls_port` intentionally unset;
-  `authorized_code_paths` → this project's own `src/`
+  container, `web_port: 8080`, `tls_port` unset; `authorized_code_paths` →
+  this project's own `src/`
 - `config/scope.example.yaml`, `config/llm_probes.example.yaml` — templates
-- `tests/` — 68 tests across 10 files, all passing, no live network or
-  `claude` CLI calls required
-- `reports/` — gitignored; populated by orchestrator runs
-  (`results.json`/`evidence.json`/`report.md`, plus `ai-triage.md` if
-  `--ai-triage` was passed, per target)
+- `tests/` — 84 tests across 12 files, all passing
+- `data/` — gitignored; `history.db` created on first `--execute` run
+- `reports/` — gitignored; `results.json`/`evidence.json`/`report.md`/
+  `diff.json` (+ `ai-triage.md` if requested) per target
 
 ### Dependencies
 `requirements.txt`: requests, beautifulsoup4, pyyaml, dnspython,
-cryptography, bandit, pytest, responses. `nmap` and `semgrep` are optional
-system/pip installs, not in `requirements.txt`. `AiTriageAnalyzer` requires
-the `claude` CLI to be installed and authenticated (not a pip dependency —
-it's the Claude Code CLI itself, confirmed present at
-`/home/webadmin/.local/bin/claude` in this environment).
+cryptography, bandit, pytest, responses. `sqlite3` is Python stdlib — no
+new dependency for history/diffing. `nmap`, `semgrep`, and the `claude` CLI
+remain optional system installs, not in `requirements.txt`.
 
 ## Notes for Next Session
 
 ### Context for a new Claude session
-- The platform is feature-complete per the original architecture, plus one
-  opt-in AI-powered triage step added after the user asked what was
-  actually "AI-powered" about it. Nothing is blocked or half-implemented.
-- If asked to add a new agent: follow the `BaseAgent` pattern (see README's
-  "Adding a new agent" section), register in `AGENT_REGISTRY`
-  (`src/orchestrator.py`), add to `PATH_BASED_AGENTS` if it's filesystem-
-  based like `CodeAnalyzer`. `EvidenceCollector`/`ReportGenerator` need no
-  changes.
-- If asked to add more AI-powered functionality: follow
-  `AiTriageAnalyzer`'s pattern (shell out to `claude -p`, keep it opt-in,
-  keep output in a clearly-labeled separate file) rather than blending
-  LLM-generated content into the deterministic pipeline's output.
+- The platform now covers: scan → aggregate → report → (optional AI
+  triage) → (on `--execute`) diff against history → exit-code signal. This
+  was step one of a broader "what makes this commercially viable"
+  conversation — see the other candidates below.
+- If asked to add a new scanning agent: same pattern as always (see
+  README's "Adding a new agent"). It automatically gets diffing for free —
+  `HistoryStore`/`diff_engine` operate on `evidence["findings"]`, which is
+  generic across agents.
+- If asked to add alerting (email/Slack/Jira): the natural hook is
+  `EXIT_NEW_FINDINGS` (`src/orchestrator.py`) and `reports/<target>-
+  diff.json` — build a notifier that reads the diff file when the exit
+  code is 3, rather than adding notification logic inside the orchestrator
+  itself (keep the one-shot-CLI-plus-external-wiring pattern established
+  by the cron/systemd approach).
 - **Never let an agent default/guess a port, path, or endpoint that could
   resolve to something other than the intended target on a shared host.**
-  This dev machine runs many unrelated Docker services on the same
-  loopback IP — see "Key lesson learned" above for the incident that
-  established this rule.
+  Standing rule, established the hard way — see "Key lesson learned."
 
-### Possible next steps (none blocking, all optional)
-1. Install `nmap` and `semgrep` locally to live-verify their code paths
-2. Add an HTML report renderer alongside Markdown if a shareable
-   non-Markdown format is wanted
-3. Consider whether `AiTriageAnalyzer`'s prompt should be user-customizable
-   (like `config/llm_probes.yaml` is for `LlmSecurityAnalyzer`) if different
-   triage framing is wanted per use case
-4. `llm-cybersec-dvwa` container is left running; `docker stop
-   llm-cybersec-dvwa` when no longer needed, or keep it as the standing
-   lab target
+### Possible next steps
+From the original "commercially viable" discussion, roughly in priority
+order, with scheduled scanning + diffing (this session) now done:
+1. **Compliance framework mapping** — tag findings against OWASP Top
+   10/CIS/SOC 2 controls
+2. **Alerting integration** (Slack/email/Jira) — natural follow-on to this
+   session's exit-code hook
+3. **Web dashboard** — trend lines over `HistoryStore`'s data, historical
+   reports, multi-target rollup
+4. **Deeper findings** — real CVE matching against detected software
+   versions, not just banner flags
+5. **Auth/attestation trail** — who authorized a scan, when, against what
+   scope
+6. Install `nmap` and `semgrep` locally to live-verify those code paths
+7. `llm-cybersec-dvwa` container still running as the standing lab target;
+   `docker stop llm-cybersec-dvwa` when no longer needed
 
 ### Warnings/Cautions
-- Never add a target to scope.yaml that isn't personally owned/authorized —
-  hard ethical/legal boundary for the whole project, not a style preference.
+- Never add a target to scope.yaml that isn't personally owned/authorized.
 - Do not loosen `_run_tool`'s allowlist check or add `shell=True` anywhere.
 - Do not let any agent default/guess a port, path, or endpoint that isn't
   explicitly scoped.
-- Do not make `AiTriageAnalyzer` (or any future AI-powered step) run by
-  default, and do not let its output be written anywhere that could be
-  mistaken for deterministic tool output without the AI-GENERATED label.
-
-### Possible next steps (none blocking, all optional)
-1. Install `nmap` and `semgrep` locally to live-verify their code paths
-   (currently only tested via mocks + graceful-degradation)
-2. Add an HTML report renderer alongside the Markdown one in
-   `ReportGenerator` if a shareable non-Markdown format is wanted
-3. Wire `EvidenceCollector` to also attach the relevant slice of
-   `logs/agent-activity.jsonl` for a given run (mentioned in the original
-   design, deferred as non-essential — evidence.json already has full
-   findings + raw agent output)
-4. `llm-cybersec-dvwa` container is left running; `docker stop
-   llm-cybersec-dvwa` when no longer needed, or keep it as the standing
-   lab target
-
-### Warnings/Cautions
-- Never add a target to scope.yaml that isn't personally owned/authorized —
-  hard ethical/legal boundary for the whole project, not a style preference.
-- Do not loosen `_run_tool`'s allowlist check or add `shell=True` anywhere.
-- Do not let any agent default/guess a port, path, or endpoint that isn't
-  explicitly scoped.
+- Do not make `AiTriageAnalyzer` (or any AI-powered step) run by default,
+  and never let AI-generated output be mistaken for deterministic tool
+  output without the AI-GENERATED label.
+- Do not let dry-run writes touch `data/history.db` — would corrupt the
+  diff baseline for real scans. (Already guarded in `orchestrator.py` —
+  keep it that way if refactoring.)

@@ -34,7 +34,7 @@ def _severity_for(finding: dict[str, Any]) -> str:
 
 
 class ReportGenerator:
-    def generate(self, evidence: dict[str, Any]) -> str:
+    def generate(self, evidence: dict[str, Any], diff: dict[str, Any] | None = None) -> str:
         lines: list[str] = []
         lines.append("# Security Assessment Report")
         lines.append("")
@@ -56,6 +56,9 @@ class ReportGenerator:
         for agent, count in sorted(summary["by_agent"].items()):
             lines.append(f"- {agent}: {count}")
         lines.append("")
+
+        if diff is not None and not diff.get("is_first_run"):
+            lines.extend(self._render_diff_section(diff))
 
         lines.append("## Detailed Findings")
         findings = evidence["findings"]
@@ -87,3 +90,35 @@ class ReportGenerator:
         lines.append("```")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_diff_section(diff: dict[str, Any]) -> list[str]:
+        lines: list[str] = ["## Changes Since Last Scan"]
+        new_findings = diff.get("new_findings", [])
+        resolved_findings = diff.get("resolved_findings", [])
+        unchanged_count = len(diff.get("unchanged_findings", []))
+
+        if not new_findings and not resolved_findings:
+            lines.append(f"_No changes — {unchanged_count} finding(s) unchanged since the last scan._")
+            lines.append("")
+            return lines
+
+        if new_findings:
+            lines.append(f"### New ({len(new_findings)})")
+            for finding in new_findings:
+                ftype = finding.get("type", "unknown")
+                detail = ", ".join(f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by"))
+                lines.append(f"- **`{ftype}`**" + (f" — {detail}" if detail else ""))
+            lines.append("")
+
+        if resolved_findings:
+            lines.append(f"### Resolved ({len(resolved_findings)})")
+            for finding in resolved_findings:
+                ftype = finding.get("type", "unknown")
+                detail = ", ".join(f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by"))
+                lines.append(f"- **`{ftype}`**" + (f" — {detail}" if detail else ""))
+            lines.append("")
+
+        lines.append(f"_{unchanged_count} finding(s) unchanged._")
+        lines.append("")
+        return lines
