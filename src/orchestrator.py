@@ -29,6 +29,7 @@ from src.agents.code_analyzer import CodeAnalyzer
 from src.agents.evidence_collector import EvidenceCollector
 from src.agents.exploit_agent import ExploitAgent
 from src.agents.infra_analyzer import InfraAnalyzer
+from src.agents.k8s_analyzer import KubernetesAnalyzer
 from src.agents.llm_security_analyzer import LlmSecurityAnalyzer
 from src.agents.recon_agent import ReconAgent
 from src.agents.report_generator import ReportGenerator
@@ -37,7 +38,14 @@ from src.alerting import send_alerts
 from src.diff_engine import compute_diff
 from src.history_store import DEFAULT_DB_PATH, HistoryStore
 from src.logging_setup import get_logger
-from src.scope_guard import AuthorizedTarget, ExploitTarget, OutOfScopeError, ScopeConfigError, ScopeGuard
+from src.scope_guard import (
+    AuthorizedTarget,
+    ExploitTarget,
+    K8sCluster,
+    OutOfScopeError,
+    ScopeConfigError,
+    ScopeGuard,
+)
 
 # Exit codes: 0 = success/no new findings, 1 = scope/config/argument error,
 # 3 = success but new findings appeared since the last run for this target
@@ -54,6 +62,7 @@ AGENT_REGISTRY = {
     "code": CodeAnalyzer,
     "llm": LlmSecurityAnalyzer,
     "exploit": ExploitAgent,
+    "k8s": KubernetesAnalyzer,
 }
 # Agents that take a local filesystem path (authorized via
 # scope.yaml's authorized_code_paths) instead of a network target.
@@ -62,6 +71,9 @@ PATH_BASED_AGENTS = {"code"}
 # (with resettable: true) -- recon authorization does not imply
 # exploitation is authorized. See src/scope_guard.py.
 EXPLOIT_AGENTS = {"exploit"}
+# Agents that take a kubeconfig context name (authorized via
+# scope.yaml's authorized_k8s_clusters) instead of a network target.
+K8S_AGENTS = {"k8s"}
 
 DEFAULT_REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
 
@@ -74,6 +86,7 @@ def run_scan(
     agent_keys: list[str],
     code_path: str | None = None,
     exploit_target: ExploitTarget | None = None,
+    k8s_cluster: K8sCluster | None = None,
     execute: bool = False,
     ai_triage: bool = False,
     reports_dir: Path = DEFAULT_REPORTS_DIR,
@@ -85,6 +98,8 @@ def run_scan(
         raise ValueError("code_path is required when 'code' is in agent_keys")
     if (EXPLOIT_AGENTS & set(agent_keys)) and exploit_target is None:
         raise ValueError("exploit_target is required when 'exploit' is in agent_keys")
+    if (K8S_AGENTS & set(agent_keys)) and k8s_cluster is None:
+        raise ValueError("k8s_cluster is required when 'k8s' is in agent_keys")
 
     reports_dir = Path(reports_dir)
     dry_run = not execute
@@ -103,6 +118,11 @@ def run_scan(
             agent_target = code_path
         elif agent_key in EXPLOIT_AGENTS:
             agent_target = exploit_target
+        elif agent_key in K8S_AGENTS:
+            # A plain kubeconfig context string -- unlike ExploitTarget,
+            # there's no dataclass here to accidentally log/serialize
+            # unsafely, since no credentials live in scope.yaml for k8s.
+            agent_target = k8s_cluster.context
         else:
             agent_target = authorized_target.host
             if agent_key in ("webapp", "api", "llm") and authorized_target.web_port:
@@ -292,9 +312,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Exploit target error: {e}", file=sys.stderr)
             return EXIT_CONFIG_ERROR
 
+    k8s_cluster = None
+    if K8S_AGENTS & set(requested_agents):
+        try:
+            k8s_cluster = guard.resolve_k8s_cluster(args.target)
+        except OutOfScopeError as e:
+            print(f"K8s cluster error: {e}", file=sys.stderr)
+            return EXIT_CONFIG_ERROR
+
     result = run_scan(
         guard, authorized_target, requested_agents,
-        code_path=args.code_path, exploit_target=exploit_target,
+        code_path=args.code_path, exploit_target=exploit_target, k8s_cluster=k8s_cluster,
         execute=args.execute, ai_triage=args.ai_triage,
     )
     return result["exit_code"]

@@ -15,13 +15,22 @@ SEVERITY_BY_TYPE = {
     "xss-exploited": "high",
     "command-injection-exploited": "high",
     "weak-credentials-exploited": "high",
+    "k8s-privileged-container": "high",
+    "k8s-host-namespace-shared": "high",
+    "k8s-overly-permissive-clusterrolebinding": "high",
+    "k8s-wildcard-clusterrole": "high",
     "tls-certificate-expiring-soon": "medium",
     "missing-security-headers": "medium",
     "openapi-no-security-scheme-declared": "medium",
     "verbose-error-page": "medium",
+    "k8s-container-runs-as-root": "medium",
+    "k8s-service-publicly-exposed": "medium",
     "graphql-introspection-enabled": "low",
     "spf-record-missing": "low",
     "dmarc-record-missing": "low",
+    "k8s-missing-resource-limits": "low",
+    "k8s-namespace-missing-network-policy": "low",
+    "k8s-default-serviceaccount-automounts-token": "low",
 }
 SEVERITY_ORDER = ["high", "medium", "low", "info"]
 BANDIT_SEVERITY_MAP = {"HIGH": "high", "MEDIUM": "medium", "LOW": "low"}

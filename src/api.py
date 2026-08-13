@@ -38,7 +38,7 @@ from pydantic import BaseModel
 from src.dashboard import generate_dashboard
 from src.history_store import DEFAULT_DB_PATH
 from src.logging_setup import get_logger
-from src.orchestrator import AGENT_REGISTRY, DEFAULT_REPORTS_DIR, EXPLOIT_AGENTS, run_scan
+from src.orchestrator import AGENT_REGISTRY, DEFAULT_REPORTS_DIR, EXPLOIT_AGENTS, K8S_AGENTS, run_scan
 from src.scope_guard import OutOfScopeError, ScopeConfigError, ScopeGuard
 
 logger = get_logger("api")
@@ -133,9 +133,16 @@ async def create_scan(req: ScanRequest) -> dict[str, Any]:
         except OutOfScopeError as e:
             raise HTTPException(status_code=403, detail=str(e))
 
+    k8s_cluster = None
+    if K8S_AGENTS & set(req.agents):
+        try:
+            k8s_cluster = guard.resolve_k8s_cluster(req.target)
+        except OutOfScopeError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+
     result = run_scan(
         guard, authorized_target, req.agents,
-        code_path=req.code_path, exploit_target=exploit_target,
+        code_path=req.code_path, exploit_target=exploit_target, k8s_cluster=k8s_cluster,
         execute=req.execute, ai_triage=req.ai_triage,
         reports_dir=_reports_dir(), history_db_path=_history_db_path(),
     )

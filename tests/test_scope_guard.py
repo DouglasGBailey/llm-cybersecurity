@@ -2,7 +2,7 @@ import textwrap
 
 import pytest
 
-from src.scope_guard import ExploitTarget, OutOfScopeError, ScopeConfigError, ScopeGuard
+from src.scope_guard import ExploitTarget, OutOfScopeError, ScopeConfigError, ScopeGuard, K8sCluster
 
 
 def write_scope(tmp_path, content):
@@ -310,3 +310,52 @@ def test_authorize_exploit_happy_path(tmp_path):
     """)
     guard = ScopeGuard(p)
     guard.authorize_exploit("127.0.0.1")  # should not raise
+
+
+def test_no_authorized_k8s_clusters_means_nothing_authorized(tmp_path):
+    guard = ScopeGuard(write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+    """))
+    assert guard.is_k8s_context_authorized("kind-lab") is False
+    with pytest.raises(OutOfScopeError):
+        guard.authorize_k8s_context("kind-lab")
+    with pytest.raises(OutOfScopeError):
+        guard.resolve_k8s_cluster("local-k8s-lab")
+
+
+def test_authorized_k8s_cluster_loads_and_resolves(tmp_path):
+    guard = ScopeGuard(write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+        authorized_k8s_clusters:
+          - name: local-k8s-lab
+            context: kind-lab
+            notes: single-node kind cluster
+    """))
+    assert len(guard.scope.authorized_k8s_clusters) == 1
+    cluster = guard.resolve_k8s_cluster("local-k8s-lab")
+    assert cluster.context == "kind-lab"
+    assert cluster.notes == "single-node kind cluster"
+
+    guard.authorize_k8s_context("kind-lab")  # should not raise
+    assert guard.is_k8s_context_authorized("kind-lab") is True
+
+    with pytest.raises(OutOfScopeError):
+        guard.resolve_k8s_cluster("not-a-real-cluster")
+    with pytest.raises(OutOfScopeError):
+        guard.authorize_k8s_context("not-a-real-context")
+
+
+def test_k8s_cluster_missing_context_raises_scope_config_error(tmp_path):
+    p = write_scope(tmp_path, """
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+        authorized_k8s_clusters:
+          - name: local-k8s-lab
+    """)
+    with pytest.raises(ScopeConfigError):
+        ScopeGuard(p)

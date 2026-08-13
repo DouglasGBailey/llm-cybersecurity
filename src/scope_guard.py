@@ -62,12 +62,30 @@ class ExploitTarget:
 
 
 @dataclass
+class K8sCluster:
+    """A Kubernetes cluster where KubernetesAnalyzer's read-only hygiene
+    checks are authorized.
+
+    Identified by a kubeconfig context name, not a host/IP -- credentials
+    live in the ambient kubeconfig (same reasoning as alerting.py's
+    env-var indirection: cluster credentials have no business sitting in
+    scope.yaml). Independent of authorized_targets: "I may run kubectl get
+    against this cluster" is a different claim than "I may scan this
+    network host."
+    """
+    name: str
+    context: str
+    notes: str = ""
+
+
+@dataclass
 class Scope:
     authorized_targets: list[AuthorizedTarget] = field(default_factory=list)
     excluded: list[str] = field(default_factory=list)
     max_scan_rate: float = 5.0
     authorized_code_paths: list[str] = field(default_factory=list)
     authorized_exploit_targets: list[ExploitTarget] = field(default_factory=list)
+    authorized_k8s_clusters: list[K8sCluster] = field(default_factory=list)
 
 
 class ScopeGuard:
@@ -125,6 +143,11 @@ class ScopeGuard:
                     known_vulnerabilities=t.get("known_vulnerabilities") or {},
                     notes=t.get("notes", ""), web_port=t.get("web_port"),
                 ))
+            k8s_clusters_raw = raw.get("authorized_k8s_clusters") or []
+            k8s_clusters = [
+                K8sCluster(name=c["name"], context=c["context"], notes=c.get("notes", ""))
+                for c in k8s_clusters_raw
+            ]
         except ScopeConfigError:
             raise
         except (KeyError, TypeError, ValueError) as e:
@@ -134,6 +157,7 @@ class ScopeGuard:
             authorized_targets=targets, excluded=excluded, max_scan_rate=max_scan_rate,
             authorized_code_paths=authorized_code_paths,
             authorized_exploit_targets=exploit_targets,
+            authorized_k8s_clusters=k8s_clusters,
         )
 
     def resolve_target(self, name_or_host: str) -> AuthorizedTarget:
@@ -224,6 +248,30 @@ class ScopeGuard:
                 f"'{path}' is not under any authorized_code_paths entry in "
                 f"{self.scope_path}. Add its directory before running "
                 "CodeAnalyzer against it."
+            )
+
+    def resolve_k8s_cluster(self, name: str) -> K8sCluster:
+        """Look up a k8s cluster by name. Raises OutOfScopeError if the
+        name isn't in authorized_k8s_clusters."""
+        for c in self.scope.authorized_k8s_clusters:
+            if c.name == name:
+                return c
+        raise OutOfScopeError(
+            f"'{name}' is not in authorized_k8s_clusters in {self.scope_path}. "
+            f"Known k8s clusters: {[c.name for c in self.scope.authorized_k8s_clusters]}"
+        )
+
+    def is_k8s_context_authorized(self, context: str) -> bool:
+        return any(c.context == context for c in self.scope.authorized_k8s_clusters)
+
+    def authorize_k8s_context(self, context: str) -> None:
+        """Raise OutOfScopeError unless the kubeconfig context is explicitly
+        authorized for scanning."""
+        if not self.is_k8s_context_authorized(context):
+            raise OutOfScopeError(
+                f"kubeconfig context '{context}' is not in authorized_k8s_clusters "
+                f"in {self.scope_path}. Add it before running KubernetesAnalyzer "
+                "against it."
             )
 
     @staticmethod

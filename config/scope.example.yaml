@@ -102,6 +102,25 @@ authorized_exploit_targets:
   #         - [admin, password]             # NOT a wordlist/brute-force
   #         - [admin, admin]
 
+# Clusters where KubernetesAnalyzer's read-only hygiene checks (`kubectl
+# get` only -- never apply/create/delete/exec) are authorized. Identified
+# by a kubeconfig CONTEXT NAME, not a host/IP -- cluster credentials are
+# never read from this file, only the ambient kubeconfig (KUBECONFIG env
+# var or ~/.kube/config) is used, same "config references credentials,
+# never stores them" pattern as alerting.py's SMTP username_env/
+# password_env. Independent of authorized_targets above.
+#
+# Works correctly against a single-node cluster (kind/minikube/k3s) --
+# nothing here assumes multi-node topology.
+authorized_k8s_clusters:
+  []
+  # - name: local-k8s-lab       # matches --target -- also needs a (dummy is
+  #                              # fine) authorized_targets entry of the same
+  #                              # name, since run_scan() is always keyed by
+  #                              # an authorized_targets entry for reporting
+  #   context: kind-lab          # `kubectl config get-contexts` to list yours
+  #   notes: "local kind cluster, single node"
+
 notes: >
   This scope file governs ALL agents in this platform. Only add hosts you
   personally own/operate or are explicitly authorized to test.

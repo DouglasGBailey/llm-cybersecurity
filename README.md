@@ -43,6 +43,7 @@ Security Auditor Agent (orchestrator.py)
 ├── Code Analyzer          [working]  bandit / semgrep over a local path
 ├── LLM Security Analyzer  [working]  prompt-injection / jailbreak probe suite
 ├── Exploit Agent          [working]  config-driven SQLi/XSS/cmd-injection/weak-creds exploitation (opt-in, separately scoped)
+├── Kubernetes Analyzer    [working]  read-only cluster hygiene via kubectl (privileged pods, RBAC, exposure, network policy)
 ├── Evidence Collector     [working]  aggregates AgentResult -> evidence.json (+ compliance tags)
 ├── Report Generator       [working]  evidence.json -> Markdown report (+ compliance, diff sections)
 └── AI Triage Analyzer     [working]  evidence.json -> Claude-written narrative (opt-in)
@@ -56,13 +57,13 @@ Supporting modules (not scanning agents):
 └── api.py                 REST API wrapping orchestrator.run_scan()
 ```
 
-All six scanning agents plus Evidence Collector and Report Generator are
+All scanning agents plus Evidence Collector and Report Generator are
 implemented — this completes the platform sketched in the original design.
 
 ### Is this actually "AI-powered"?
 
 Mostly no, and that's deliberate. Every scanning agent (Recon, WebApp, API,
-Infra, Code, LLM Security) plus Evidence Collector and Report Generator are
+Infra, Code, LLM Security, Kubernetes) plus Evidence Collector and Report Generator are
 **fully deterministic, rule-based code** — regex parsing, header presence
 checks, date arithmetic, substring matching. No LLM call, no judgment call,
 fully auditable. That was the point of the original design: restricted,
@@ -300,6 +301,63 @@ python -m src.orchestrator --scope config/scope.yaml --target local-dvwa --agent
 Full activity log (every tool/request invocation, with timestamps) is at
 `logs/agent-activity.jsonl`.
 
+## Kubernetes Cluster Scanning (KubernetesAnalyzer)
+
+Read-only hygiene checks against an authorized cluster — `kubectl get`
+only, never `apply`/`create`/`delete`/`exec`. Works correctly against a
+single-node cluster (kind/minikube/k3s, the expected lab target); nothing
+in the checks assumes multi-node topology.
+
+**Connects via a kubeconfig context name, not stored credentials.**
+`scope.yaml` never holds a cluster API server URL, token, or cert — only
+the context name to use from your ambient kubeconfig (`KUBECONFIG` env var
+or `~/.kube/config`). Same "config references, never stores, credentials"
+pattern `alerting.py` uses for SMTP. Separate authorization list
+(`authorized_k8s_clusters`), independent of `authorized_targets` — "I may
+run `kubectl get` against this cluster" is a different claim than "I may
+scan this network host."
+
+```yaml
+authorized_k8s_clusters:
+  - name: local-k8s-lab       # matches --target -- also needs a matching
+                               # authorized_targets entry (any host value is
+                               # fine), since run_scan() is always keyed by
+                               # an authorized_targets entry for reporting
+    context: kind-lab          # `kubectl config get-contexts` to list yours
+    notes: "local kind cluster, single node"
+```
+
+Checks (all findings mapped to OWASP Top 10 2021 / CIS Controls v8 where a
+clear mapping exists, same as every other agent):
+
+| Finding | What it means |
+|---|---|
+| `k8s-privileged-container` | a container's `securityContext.privileged: true` |
+| `k8s-container-runs-as-root` | a container explicitly sets `runAsUser: 0` |
+| `k8s-host-namespace-shared` | a pod sets `hostNetwork`/`hostPID`/`hostIPC` |
+| `k8s-missing-resource-limits` | containers without CPU/memory limits (counted per namespace) |
+| `k8s-overly-permissive-clusterrolebinding` | a `User`/`ServiceAccount` (not the default `system:masters` group) bound to `cluster-admin` |
+| `k8s-wildcard-clusterrole` | a non-built-in `ClusterRole` granting `resources: ["*"], verbs: ["*"]` |
+| `k8s-service-publicly-exposed` | a `Service` of type `NodePort`/`LoadBalancer` |
+| `k8s-namespace-missing-network-policy` | a non-system namespace with zero `NetworkPolicy` objects |
+| `k8s-default-serviceaccount-automounts-token` | a namespace's `default` ServiceAccount doesn't set `automountServiceAccountToken: false` |
+| `k8s-node-info` | informational: node count and kubelet version per node |
+
+`kube-system`/`kube-public`/`kube-node-lease` are excluded from the
+network-policy and default-ServiceAccount checks (cluster-managed
+namespaces, not operator-configured workloads) but **not** from the
+pod-security checks — a genuinely privileged/hostNetwork control-plane pod
+is still reported as such; it's just expected to already be there
+(`kube-proxy`, static control-plane pods) rather than a surprise.
+
+```bash
+python -m src.orchestrator --scope config/scope.yaml --target local-k8s-lab --agents k8s --execute
+```
+
+If `kubectl` isn't installed, every check degrades gracefully to a
+`tool-unavailable` finding (same pattern as optional tools like `semgrep`
+in `CodeAnalyzer`) rather than failing the whole scan.
+
 ## Scheduled Scanning & Diffing
 
 Every `--execute` run is recorded in a local SQLite history
@@ -498,16 +556,18 @@ source venv/bin/activate
 python -m pytest tests/ -v
 ```
 
-140/140 tests passing as of this build (scope guard: 18, recon agent: 5,
-web app analyzer: 5, api analyzer: 7, infra analyzer: 9, code analyzer: 7,
-llm security analyzer: 8, exploit agent: 10, evidence collector: 7, report
-generator: 13, ai triage analyzer: 5, history store: 6, diff engine: 6,
-compliance mapping: 6, alerting: 8, dashboard: 6, REST API: 14). All tests
-mock subprocess/HTTP/SMTP calls or use a temp SQLite file/scope file/
-in-process FastAPI TestClient — no live network access, installed security
-tools, a live `claude` CLI, an SMTP server, or a running API server are
-required to run the suite. `ExploitAgent`'s tests mock HTTP the same way
-`WebAppAnalyzer`/`ApiAnalyzer`'s do — no real exploitation happens in CI.
+179/179 tests passing as of this build (scope guard: 26, recon agent: 5,
+web app analyzer: 5, api analyzer: 7, infra analyzer: 10, code analyzer: 7,
+llm security analyzer: 8, exploit agent: 14, k8s analyzer: 17, orchestrator: 7,
+evidence collector: 7, report generator: 14, ai triage analyzer: 5, history
+store: 6, diff engine: 6, compliance mapping: 6, alerting: 8, dashboard: 6,
+REST API: 15). All tests mock subprocess/HTTP/SMTP calls or use a temp
+SQLite file/scope file/in-process FastAPI TestClient — no live network
+access, installed security tools, a live `claude` CLI, an SMTP server, or a
+running API server are required to run the suite. `ExploitAgent`'s and
+`KubernetesAnalyzer`'s tests mock HTTP/`kubectl` the same way
+`WebAppAnalyzer`/`ApiAnalyzer`'s do — no real exploitation or cluster
+access happens in CI.
 
 ## Adding a new agent
 

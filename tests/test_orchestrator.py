@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from src.orchestrator import run_scan
-from src.scope_guard import ExploitTarget, ScopeGuard
+from src.scope_guard import ExploitTarget, K8sCluster, ScopeGuard
 
 
 def make_guard(tmp_path) -> ScopeGuard:
@@ -33,12 +33,48 @@ def test_run_scan_rejects_exploit_agent_without_exploit_target(tmp_path):
         run_scan(guard, target, ["exploit"], reports_dir=tmp_path / "reports")
 
 
+def test_run_scan_rejects_k8s_agent_without_k8s_cluster(tmp_path):
+    guard = make_guard(tmp_path)
+    target = guard.resolve_target("local")
+    with pytest.raises(ValueError, match="k8s_cluster"):
+        run_scan(guard, target, ["k8s"], reports_dir=tmp_path / "reports")
+
+
 def test_run_scan_with_no_agents_succeeds(tmp_path):
     guard = make_guard(tmp_path)
     target = guard.resolve_target("local")
     result = run_scan(guard, target, [], reports_dir=tmp_path / "reports")
     assert result["exit_code"] == 0
     assert result["results"] == []
+
+
+def test_run_scan_k8s_agent_uses_context_string_as_target(tmp_path):
+    """k8s_cluster.context (a plain string, never a dataclass) is what
+    reaches the agent -- avoids the whole class of leak/serialization bugs
+    ExploitTarget had, since there's nothing sensitive to redact."""
+    p = tmp_path / "scope.yaml"
+    p.write_text(textwrap.dedent("""
+        authorized_targets:
+          - name: local
+            host: 127.0.0.1
+        excluded: []
+        max_scan_rate: 1000
+        authorized_k8s_clusters:
+          - name: local
+            context: kind-lab
+    """))
+    guard = ScopeGuard(p)
+    target = guard.resolve_target("local")
+    k8s_cluster = K8sCluster(name="local", context="kind-lab")
+
+    with patch("shutil.which", return_value=None):  # kubectl "not installed" -- degrades gracefully
+        result = run_scan(
+            guard, target, ["k8s"], k8s_cluster=k8s_cluster,
+            reports_dir=tmp_path / "reports",
+        )
+
+    assert result["results"][0].status == "ok"
+    assert result["results"][0].target == "kind-lab"
 
 
 def make_exploit_target() -> ExploitTarget:

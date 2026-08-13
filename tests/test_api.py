@@ -80,6 +80,11 @@ def test_create_scan_code_agent_without_code_path_returns_400():
     assert resp.status_code == 400
 
 
+def test_create_scan_k8s_agent_without_authorized_cluster_returns_403():
+    resp = client.post("/scans", json={"target": "test-target", "agents": ["k8s"]})
+    assert resp.status_code == 403
+
+
 def test_get_report_and_evidence_after_scan():
     client.post("/scans", json={"target": "test-target", "agents": [], "execute": True})
 

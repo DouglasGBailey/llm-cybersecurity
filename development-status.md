@@ -8,14 +8,18 @@ exploitation (`ExploitAgent`) built across prior sessions (see git log for
 the ExploitAgent design session's full detail — 6 scanning agents,
 evidence/report/AI-triage, scheduled scanning + diffing, alerting,
 compliance mapping, dashboard, containerization + REST API, then
-exploitation as a deliberate, separately-authorized policy shift). Two
+exploitation as a deliberate, separately-authorized policy shift). Three
 more sessions since: (1) wrote `FUNCTIONAL_SPEC.md`/`TECHNICAL_SPEC.md`
 and a full hands-on tutorial site (`tutorial/index.html`), committed as
-`ee0eac0`/`859e699`; (2) **this session** — ran a 9-agent parallel
-`total-code-intelligence` full-codebase audit, then implemented fixes for
-every finding it surfaced (6 critical, 4 remaining important, 5
-suggestion-tier — 2 comment-quality findings had already been fixed
-inline before the fix pass began).
+`ee0eac0`/`859e699`; (2) ran a 9-agent parallel `total-code-intelligence`
+full-codebase audit, implemented fixes for every finding (6 critical, 4
+important, 5 suggestion-tier), then caught and fixed a real credential-leak
+bug the audit itself missed during live DVWA re-verification; (3) **this
+session** — added a seventh scanning agent, `KubernetesAnalyzer`, in
+response to an explicit request to add k8s cluster scanning (minimum
+1-node support), with its own separately-authorized scope model
+(`authorized_k8s_clusters`) mirroring the `ExploitAgent`/`CodeAnalyzer`
+precedent of a dedicated authorization list per resource type.
 
 ## Current Project State
 
@@ -349,6 +353,106 @@ log line, a `print`, or a serialized field. Two new regression tests in
 latter caught the JSON-serialization crash directly — it failed before
 the fix). 156/156 tests passing after this fix.
 
+### This session — KubernetesAnalyzer (seventh scanning agent)
+
+User asked: "can we add functionality to scan a k8s cluster for issues,
+min 1 node". Before building, asked two clarifying questions (mirroring
+the `ExploitAgent` precedent of confirming scope model + depth before a
+new capability, since this needed its own authorization-list decision):
+connection method (kubeconfig context vs. explicit API server + stored
+credentials — user chose kubeconfig context) and check depth (core
+hygiene checks vs. CIS Kubernetes Benchmark-style depth requiring
+control-plane/node access `kubectl` alone can't see — user chose core
+hygiene).
+
+**Scope model** (`src/scope_guard.py`): new `K8sCluster` dataclass (`name`,
+`context`, `notes`) and `Scope.authorized_k8s_clusters`. Identified by a
+kubeconfig **context name**, never a host/IP or stored credential — the
+ambient kubeconfig (`KUBECONFIG` env var or `~/.kube/config`) is the sole
+credential source, same "config references, never stores, credentials"
+pattern `alerting.py` already uses for SMTP. `resolve_k8s_cluster(name)` /
+`authorize_k8s_context(context)` mirror the existing
+`resolve_exploit_target`/`authorize_exploit` pair. Independent of
+`authorized_targets` — same "different claim" reasoning as
+`authorized_code_paths`.
+
+**`src/agents/k8s_analyzer.py` (new)**: `KubernetesAnalyzer(BaseAgent)`,
+`allowed_tools = ["kubectl"]`, six checks via `kubectl get ... -o json`
+(list/read only — never `apply`/`create`/`delete`/`exec`):
+`k8s-privileged-container`, `k8s-container-runs-as-root`,
+`k8s-host-namespace-shared` (hostNetwork/PID/IPC), `k8s-missing-resource-
+limits` (aggregated per namespace to avoid finding-spam),
+`k8s-overly-permissive-clusterrolebinding` (User/ServiceAccount bound to
+`cluster-admin` — the default Group:system:masters binding is correctly
+excluded as expected control-plane wiring),
+`k8s-wildcard-clusterrole` (built-in roles `cluster-admin`/`admin`/`edit`/
+`view`/`system:*` excluded as by-design), `k8s-service-publicly-exposed`
+(NodePort/LoadBalancer), `k8s-namespace-missing-network-policy`,
+`k8s-default-serviceaccount-automounts-token`, and an informational
+`k8s-node-info` (node count + kubelet version — the piece confirming
+single-node support: nothing here assumes multi-node topology, everything
+is namespace/resource scoped). `kube-system`/`kube-public`/
+`kube-node-lease` are excluded from the network-policy and default-SA
+checks (cluster-managed, not operator-configured) but deliberately **not**
+from the pod-security checks — a genuinely privileged/hostNetwork
+control-plane pod is still reported, just expected to be there.
+
+**Design choice that avoided a whole bug class**: `KubernetesAnalyzer.run()`
+takes a plain `context: str`, not a `K8sCluster` object — unlike
+`ExploitAgent.run(exploit_target: ExploitTarget)`. Since no credentials
+live in `authorized_k8s_clusters` (unlike `ExploitTarget`'s
+`known_vulnerabilities`), there's nothing sensitive to accidentally
+log/serialize, sidestepping the exact leak-and-crash bug class fixed
+earlier this session for `ExploitTarget`. `orchestrator.py`'s agent loop
+passes `k8s_cluster.context` as `agent_target` for `"k8s"` in
+`K8S_AGENTS`, so the existing safe-logging code path (`target_label`)
+handles it with zero special-casing.
+
+**Orchestrator/API wiring**: `AGENT_REGISTRY["k8s"] = KubernetesAnalyzer`,
+new `K8S_AGENTS = {"k8s"}` set, `run_scan()` gained a `k8s_cluster`
+parameter with the same precondition validation pattern as `code_path`/
+`exploit_target` (`ValueError` if `"k8s"` requested without a resolved
+cluster). Both `main()` (CLI) and `create_scan()` (`src/api.py`) resolve
+`guard.resolve_k8s_cluster(target_name)` before running any agent when
+`"k8s"` is requested, failing fast (CLI: `EXIT_CONFIG_ERROR`; API: `403`)
+if the context isn't separately authorized — same fail-fast pattern as
+`ExploitAgent`. Note: like `CodeAnalyzer`/`ExploitAgent`, a k8s-only scan
+still needs a same-named `authorized_targets` entry too, since `run_scan()`
+is always keyed by that for report naming/history — documented in both
+`config/scope.example.yaml` and the README.
+
+**Findings/severity/compliance**: `k8s-privileged-container`,
+`k8s-host-namespace-shared`, `k8s-overly-permissive-clusterrolebinding`,
+`k8s-wildcard-clusterrole` → `HIGH`; `k8s-container-runs-as-root`,
+`k8s-service-publicly-exposed` → `MEDIUM`; the rest → `LOW`/informational.
+Mapped to OWASP A05 (Security Misconfiguration), A01 (Broken Access
+Control), and CIS Controls v8 4.1/4.8/6.8 where a clear mapping exists —
+zero changes needed to `EvidenceCollector`/`dashboard.py`/`diff_engine`,
+the "new agent needs no downstream changes" design decision holding again.
+
+**Testing**: 17 new tests in `tests/test_k8s_analyzer.py` mocking
+`subprocess.run` with canned `kubectl -o json` output per resource type
+(same pattern as `test_infra_analyzer.py`'s `fake_dig`), covering every
+check plus dry-run, tool-unavailable, and kubectl-failure paths. Plus new
+`ScopeGuard`/`orchestrator`/`api` tests for the k8s wiring. 179/179 tests
+passing.
+
+**Live verification**: installed `kubectl` + `kind` (needed `sudo`,
+confirmed passwordless access first), created a disposable single-node
+`kind` cluster (`llm-cybersec-k8s-lab`), deployed manifests with one pod
+combining `hostNetwork`/`hostPID`/`privileged: true`/`runAsUser: 0`, a
+`NodePort` Service, a wildcard `ClusterRole`, and a `ClusterRoleBinding`
+granting `cluster-admin` to a `ServiceAccount` — then ran a real
+`--agents k8s --execute` scan. Every intended finding fired correctly,
+including the "expected" ones on real `kube-system` control-plane pods
+(`kube-proxy` is genuinely privileged/hostNetwork by design — correctly
+reported as true, not suppressed) and correct exclusion of `kube-system`
+from the network-policy/default-SA checks. Confirmed single-node support
+directly: `k8s-node-info` reported `node_count: 1`. Verified report
+rendering (severity grouping, compliance tags) against the real evidence
+bundle. Cluster torn down afterward (`kind delete cluster`), no lingering
+state (`kind get clusters` → none).
+
 ### Known Issues / Limitations
 - Carried forward from prior sessions (nmap/semgrep optional, LLM probe
   heuristic, exact-content dedup, compliance mapping intentionally
@@ -435,19 +539,36 @@ dashboard, API auth opt-in with localhost-default bind, container
 - `config/scope.yaml` — now has a working `authorized_exploit_targets`
   entry for `local-dvwa` with all four vuln classes configured and
   live-verified
-- `tests/` — 154 tests across 18 files (added `tests/test_orchestrator.py`
-  this session), all passing
-- `FUNCTIONAL_SPEC.md`/`TECHNICAL_SPEC.md` (prior session) — not
-  re-verified against this session's fixes; none of the fixes change
-  documented behavior (exit codes, config schema, CLI/API surface are all
-  unchanged — only validation/robustness was added), but worth a pass if
-  either doc is relied on again
-- `tutorial/index.html` (prior session) — Module 9 references
-  `ExploitAgent`'s config schema/behavior, which this session's fixes
-  don't change, so it should still be accurate
+- **This session — `src/agents/k8s_analyzer.py`** (new, `KubernetesAnalyzer`),
+  `src/scope_guard.py` modified (`K8sCluster`, `authorized_k8s_clusters`,
+  `resolve_k8s_cluster`/`authorize_k8s_context`/`is_k8s_context_authorized`),
+  `src/orchestrator.py` modified (`K8S_AGENTS`, `k8s_cluster` param/
+  resolution in both `run_scan()` and `main()`), `src/api.py` modified
+  (same, `create_scan`), `src/agents/report_generator.py` modified
+  (`SEVERITY_BY_TYPE` entries), `src/compliance_mapping.py` modified
+  (`COMPLIANCE_MAP` entries), `config/scope.example.yaml` modified
+  (`authorized_k8s_clusters` documented), `README.md` modified (new
+  "Kubernetes Cluster Scanning" section, agent table/counts updated)
+- `tests/test_k8s_analyzer.py` (new, 17 tests); `tests/test_scope_guard.py`,
+  `tests/test_orchestrator.py`, `tests/test_api.py` each gained k8s-wiring
+  tests
+- `tests/` — 179 tests across 19 files, all passing
+- `FUNCTIONAL_SPEC.md`/`TECHNICAL_SPEC.md` (prior sessions) — not updated
+  for `KubernetesAnalyzer`; both predate it and would need a new capability
+  entry (§5-style table row) to stay accurate if relied on again
+- `tutorial/index.html` (prior session) — predates `KubernetesAnalyzer`
+  entirely, no mention to be inaccurate about, but doesn't cover it either
 
 ### Dependencies
-No new dependencies this session — `ExploitAgent` uses `requests` and
+No new dependencies this session for the Python package itself —
+`KubernetesAnalyzer` shells out to `kubectl` (like `nmap`/`dig`/`bandit`/
+`semgrep` before it) rather than adding a Kubernetes client library.
+`kubectl` and `kind` were installed system-wide (`/usr/local/bin`, via
+`sudo`) for live verification only — not a project dependency, since the
+agent only requires `kubectl` to be present on whatever machine runs a
+scan, same as any other external-tool-backed agent.
+
+No new dependencies from the exploitation-design session — `ExploitAgent` uses `requests` and
 `bs4`, both already present.
 
 ## Notes for Next Session
@@ -478,6 +599,18 @@ No new dependencies this session — `ExploitAgent` uses `requests` and
   Standing rule, now also applies to command-injection command selection
   (never expand `ALLOWED_COMMANDS` via config) and SQLi payload
   construction (never allow non-SELECT statements via config).
+- `KubernetesAnalyzer` is read-only by design (`kubectl get` only) — if
+  asked to extend it toward remediation/mutation (auto-patching a
+  privileged pod, deleting a wildcard ClusterRole, etc.), treat that the
+  same way exploitation and code-scanning scope changes were treated: ask
+  before building, since "flag the issue" and "change the cluster" are
+  very different claims, same reasoning as `ExploitAgent`'s hard lines.
+- No k8s client library was added — `KubernetesAnalyzer` shells out to
+  `kubectl` like every other tool-backed agent. If ever tempted to switch
+  to the `kubernetes` Python client for richer typing, weigh it against
+  this project's consistent "external tool via subprocess, not a new SDK
+  dependency" pattern (`nmap`, `dig`, `whois`, `bandit`, `semgrep`, now
+  `kubectl`) before doing so.
 
 ### Possible next steps
 1. Point `ExploitAgent` at additional lab targets (Juice Shop, etc.) —
@@ -489,6 +622,13 @@ No new dependencies this session — `ExploitAgent` uses `requests` and
    — its database is now initialized and security level set to low, so a
    fresh `docker rm` + re-run will need that setup redone (that's the
    whole point of `resettable: true` — it's expected to be redone)
+4. `KubernetesAnalyzer` has only been live-verified against a disposable
+   `kind` cluster created and torn down for this session — no standing k8s
+   lab target exists (unlike DVWA). If k8s scanning becomes a regular
+   workflow, consider standing up a persistent local cluster the way DVWA
+   is a persistent container, rather than spinning one up per verification
+5. `FUNCTIONAL_SPEC.md`/`TECHNICAL_SPEC.md` predate `KubernetesAnalyzer` —
+   worth a pass adding it if either doc is relied on again
 
 ### Warnings/Cautions
 Carried forward (never add an unauthorized target; don't loosen

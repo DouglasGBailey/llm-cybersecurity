@@ -92,6 +92,41 @@ COMPLIANCE_MAP: dict[str, list[dict[str, str]]] = {
     "weak-credentials-exploited": [
         {"framework": "OWASP Top 10 2021", "control": "A07:2021 - Identification and Authentication Failures"},
     ],
+
+    # --- Kubernetes hygiene (KubernetesAnalyzer) ---
+    "k8s-privileged-container": [
+        {"framework": "OWASP Top 10 2021", "control": "A05:2021 - Security Misconfiguration"},
+        {"framework": "CIS Controls v8", "control": "4.1 - Establish and Maintain a Secure Configuration Process"},
+    ],
+    "k8s-container-runs-as-root": [
+        {"framework": "OWASP Top 10 2021", "control": "A05:2021 - Security Misconfiguration"},
+        {"framework": "CIS Controls v8", "control": "4.1 - Establish and Maintain a Secure Configuration Process"},
+    ],
+    "k8s-host-namespace-shared": [
+        {"framework": "OWASP Top 10 2021", "control": "A05:2021 - Security Misconfiguration"},
+        {"framework": "CIS Controls v8", "control": "4.1 - Establish and Maintain a Secure Configuration Process"},
+    ],
+    "k8s-missing-resource-limits": [
+        {"framework": "CIS Controls v8", "control": "4.1 - Establish and Maintain a Secure Configuration Process"},
+    ],
+    "k8s-overly-permissive-clusterrolebinding": [
+        {"framework": "OWASP Top 10 2021", "control": "A01:2021 - Broken Access Control"},
+        {"framework": "CIS Controls v8", "control": "6.8 - Define and Maintain Role-Based Access Control"},
+    ],
+    "k8s-wildcard-clusterrole": [
+        {"framework": "OWASP Top 10 2021", "control": "A01:2021 - Broken Access Control"},
+        {"framework": "CIS Controls v8", "control": "6.8 - Define and Maintain Role-Based Access Control"},
+    ],
+    "k8s-service-publicly-exposed": [
+        {"framework": "OWASP Top 10 2021", "control": "A05:2021 - Security Misconfiguration"},
+        {"framework": "CIS Controls v8", "control": "4.8 - Uninstall or Disable Unnecessary Services on Enterprise Assets"},
+    ],
+    "k8s-namespace-missing-network-policy": [
+        {"framework": "OWASP Top 10 2021", "control": "A05:2021 - Security Misconfiguration"},
+    ],
+    "k8s-default-serviceaccount-automounts-token": [
+        {"framework": "OWASP Top 10 2021", "control": "A01:2021 - Broken Access Control"},
+    ],
 }
 
 
