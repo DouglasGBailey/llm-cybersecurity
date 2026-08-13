@@ -57,6 +57,8 @@ class ReportGenerator:
             lines.append(f"- {agent}: {count}")
         lines.append("")
 
+        lines.extend(self._render_compliance_coverage(evidence["findings"]))
+
         if diff is not None and not diff.get("is_first_run"):
             lines.extend(self._render_diff_section(diff))
 
@@ -77,9 +79,13 @@ class ReportGenerator:
                 for finding in bucket:
                     ftype = finding.get("type", "unknown")
                     seen_by = ", ".join(finding.get("seen_by", []))
-                    lines.append(f"- **`{ftype}`** (seen by: {seen_by})")
+                    header = f"- **`{ftype}`** (seen by: {seen_by})"
+                    tags = finding.get("compliance") or []
+                    if tags:
+                        header += " " + " ".join(f"[{t['framework']}: {t['control']}]" for t in tags)
+                    lines.append(header)
                     for key, value in finding.items():
-                        if key in ("type", "seen_by"):
+                        if key in ("type", "seen_by", "compliance"):
                             continue
                         lines.append(f"  - {key}: {value}")
                 lines.append("")
@@ -107,7 +113,9 @@ class ReportGenerator:
             lines.append(f"### New ({len(new_findings)})")
             for finding in new_findings:
                 ftype = finding.get("type", "unknown")
-                detail = ", ".join(f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by"))
+                detail = ", ".join(
+                    f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by", "compliance")
+                )
                 lines.append(f"- **`{ftype}`**" + (f" — {detail}" if detail else ""))
             lines.append("")
 
@@ -115,10 +123,31 @@ class ReportGenerator:
             lines.append(f"### Resolved ({len(resolved_findings)})")
             for finding in resolved_findings:
                 ftype = finding.get("type", "unknown")
-                detail = ", ".join(f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by"))
+                detail = ", ".join(
+                    f"{k}={v}" for k, v in finding.items() if k not in ("type", "seen_by", "compliance")
+                )
                 lines.append(f"- **`{ftype}`**" + (f" — {detail}" if detail else ""))
             lines.append("")
 
         lines.append(f"_{unchanged_count} finding(s) unchanged._")
+        lines.append("")
+        return lines
+
+    @staticmethod
+    def _render_compliance_coverage(findings: list[dict[str, Any]]) -> list[str]:
+        counts: dict[tuple[str, str], int] = {}
+        for finding in findings:
+            for tag in finding.get("compliance") or []:
+                key = (tag["framework"], tag["control"])
+                counts[key] = counts.get(key, 0) + 1
+
+        lines = ["### Compliance Coverage"]
+        if not counts:
+            lines.append("_No findings map to a tracked compliance control._")
+            lines.append("")
+            return lines
+
+        for (framework, control), count in sorted(counts.items(), key=lambda kv: -kv[1]):
+            lines.append(f"- **{framework}** — {control}: {count} finding(s)")
         lines.append("")
         return lines

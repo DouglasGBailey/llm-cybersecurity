@@ -5,7 +5,9 @@ Not a scanning agent -- no network/tool access, no scope checks (the
 individual agents already enforced scope before producing these results).
 Deduplicates findings that are identical across agents (e.g. two agents
 independently noting the same fact) by content, tracking which agent(s)
-observed each one.
+observed each one. Also enriches each finding with compliance framework
+tags (src/compliance_mapping.py) -- added after the dedup key is computed,
+so compliance tags never affect finding identity/dedup.
 """
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.agent_base import AgentResult
+from src.compliance_mapping import compliance_tags_for
 
 
 class EvidenceCollector:
@@ -29,7 +32,11 @@ class EvidenceCollector:
                 by_type[finding.get("type", "unknown")] += 1
                 key = json.dumps(finding, sort_keys=True, default=str)
                 if key not in findings_index:
-                    findings_index[key] = {**finding, "seen_by": []}
+                    findings_index[key] = {
+                        **finding,
+                        "seen_by": [],
+                        "compliance": compliance_tags_for(finding.get("type", "")),
+                    }
                 if result.agent_name not in findings_index[key]["seen_by"]:
                     findings_index[key]["seen_by"].append(result.agent_name)
 

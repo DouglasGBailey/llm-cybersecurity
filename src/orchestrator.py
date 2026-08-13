@@ -7,6 +7,11 @@ against lab infrastructure.
 
 Defaults to --dry-run: prints the exact tool invocations each agent would
 make without executing anything. Pass --execute to actually run.
+
+`run_scan()` holds the actual scan logic (agent loop, evidence/report/diff/
+alert generation) as a reusable function -- `main()` is a thin CLI shell
+around it, and `src/api.py` calls it directly for the REST API, so there's
+exactly one place this logic lives.
 """
 from __future__ import annotations
 
@@ -15,6 +20,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from src.agent_base import AgentResult
 from src.agents.ai_triage_analyzer import AiTriageAnalyzer
@@ -26,10 +32,11 @@ from src.agents.llm_security_analyzer import LlmSecurityAnalyzer
 from src.agents.recon_agent import ReconAgent
 from src.agents.report_generator import ReportGenerator
 from src.agents.webapp_analyzer import WebAppAnalyzer
+from src.alerting import send_alerts
 from src.diff_engine import compute_diff
-from src.history_store import HistoryStore
+from src.history_store import DEFAULT_DB_PATH, HistoryStore
 from src.logging_setup import get_logger
-from src.scope_guard import OutOfScopeError, ScopeConfigError, ScopeGuard
+from src.scope_guard import AuthorizedTarget, OutOfScopeError, ScopeConfigError, ScopeGuard
 
 # Exit codes: 0 = success/no new findings, 1 = scope/config/argument error,
 # 3 = success but new findings appeared since the last run for this target
@@ -50,7 +57,143 @@ AGENT_REGISTRY = {
 # scope.yaml's authorized_code_paths) instead of a network target.
 PATH_BASED_AGENTS = {"code"}
 
+DEFAULT_REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
+
 logger = get_logger("orchestrator")
+
+
+def run_scan(
+    guard: ScopeGuard,
+    authorized_target: AuthorizedTarget,
+    agent_keys: list[str],
+    code_path: str | None = None,
+    execute: bool = False,
+    ai_triage: bool = False,
+    reports_dir: Path = DEFAULT_REPORTS_DIR,
+    history_db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any]:
+    """Run the requested agents against authorized_target and produce all
+    the usual output files. Used by both main() (CLI) and src/api.py."""
+    reports_dir = Path(reports_dir)
+    dry_run = not execute
+    mode = "DRY-RUN (no actions executed)" if dry_run else "EXECUTE (live actions)"
+    print("=== Security Auditor Agent ===")
+    print(f"Target: {authorized_target.name} ({authorized_target.host})")
+    print(f"Agents: {agent_keys}")
+    print(f"Mode:   {mode}")
+    print()
+
+    results: list[AgentResult] = []
+    for agent_key in agent_keys:
+        agent_cls = AGENT_REGISTRY[agent_key]
+        agent = agent_cls(guard, dry_run=dry_run)
+        if agent_key in PATH_BASED_AGENTS:
+            agent_target = code_path
+        else:
+            agent_target = authorized_target.host
+            if agent_key in ("webapp", "api", "llm") and authorized_target.web_port:
+                agent_target = f"{authorized_target.host}:{authorized_target.web_port}"
+            elif agent_key == "infra" and authorized_target.tls_port:
+                agent_target = f"{authorized_target.host}:{authorized_target.tls_port}"
+        logger.info(f"Running {agent.name} against {agent_target}")
+        try:
+            result = agent.run(agent_target)
+        except Exception as e:  # noqa: BLE001 - one agent's failure shouldn't kill the run
+            logger.error(f"{agent.name} failed: {e}")
+            result = AgentResult(
+                agent_name=agent.name, target=agent_target,
+                timestamp=agent._now(), status="error", error=str(e),
+            )
+        results.append(result)
+        print(f"--- {agent.name} ---")
+        print(f"status: {result.status}")
+        for finding in result.findings:
+            print(f"  finding: {finding}")
+        print()
+
+    reports_dir.mkdir(exist_ok=True, parents=True)
+    results_path = reports_dir / f"{authorized_target.name}-results.json"
+    results_path.write_text(json.dumps([r.to_dict() for r in results], indent=2))
+    print(f"Results written to {results_path}")
+
+    evidence = EvidenceCollector().collect(results)
+    evidence_path = reports_dir / f"{authorized_target.name}-evidence.json"
+    evidence_path.write_text(json.dumps(evidence, indent=2))
+    print(f"Evidence bundle written to {evidence_path}")
+
+    diff = None
+    diff_path = None
+    alerted_channels: list[str] = []
+    if not dry_run:
+        # dry-run produces no real findings, so history/diffing is skipped --
+        # recording a dry-run's (empty/placeholder) findings as a "run" would
+        # corrupt the history used for diffing real scans against each other.
+        history = HistoryStore(db_path=history_db_path)
+        previous_run = history.get_previous_run(authorized_target.name)
+        diff = compute_diff(
+            previous_findings=previous_run["findings"] if previous_run else [],
+            current_findings=evidence["findings"],
+            is_first_run=previous_run is None,
+        )
+        history.save_run(authorized_target.name, evidence["generated_at"], evidence["findings"])
+
+        diff_path = reports_dir / f"{authorized_target.name}-diff.json"
+        diff_path.write_text(json.dumps(diff, indent=2))
+        print(f"Diff written to {diff_path}")
+        if diff["is_first_run"]:
+            print("  first run for this target -- no prior history to compare against")
+        else:
+            print(f"  {len(diff['new_findings'])} new, {len(diff['resolved_findings'])} resolved, "
+                  f"{len(diff['unchanged_findings'])} unchanged since last run")
+
+        alerted_channels = send_alerts(authorized_target.name, diff)
+        if alerted_channels:
+            print(f"  alert sent via: {', '.join(alerted_channels)}")
+
+    report = ReportGenerator().generate(evidence, diff=diff)
+    report_path = reports_dir / f"{authorized_target.name}-report.md"
+    report_path.write_text(report)
+    print(f"Report written to {report_path}")
+
+    ai_triage_narrative = None
+    ai_triage_path = None
+    if ai_triage:
+        triage_agent = AiTriageAnalyzer(guard, dry_run=dry_run)
+        logger.info("Running ai-triage-analyzer over evidence bundle")
+        triage_result = triage_agent.run(evidence)
+        ai_triage_narrative = next(
+            (f["narrative"] for f in triage_result.findings if f["type"] == "ai-triage-narrative"),
+            None,
+        )
+        if ai_triage_narrative:
+            ai_triage_path = reports_dir / f"{authorized_target.name}-ai-triage.md"
+            ai_triage_path.write_text(
+                "<!-- AI-GENERATED: this narrative was produced by Claude reading the "
+                "evidence bundle below. Verify against the deterministic report.md before "
+                "acting on it. -->\n\n# AI Triage Narrative\n\n" + ai_triage_narrative + "\n"
+            )
+            print(f"AI triage narrative written to {ai_triage_path}")
+        else:
+            print(f"AI triage did not produce a narrative: {triage_result.findings}")
+
+    exit_code = EXIT_NEW_FINDINGS if (diff is not None and diff["has_new_findings"]) else EXIT_OK
+
+    return {
+        "exit_code": exit_code,
+        "results": results,
+        "evidence": evidence,
+        "diff": diff,
+        "report": report,
+        "ai_triage_narrative": ai_triage_narrative,
+        "alerted_channels": alerted_channels,
+        "paths": {
+            "results": results_path,
+            "evidence": evidence_path,
+            "report": report_path,
+            "diff": diff_path,
+            "ai_triage": ai_triage_path,
+        },
+    }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -115,103 +258,11 @@ def main(argv: list[str] | None = None) -> int:
         print("--code-path is required when 'code' is in --agents", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
-    dry_run = not args.execute
-    mode = "DRY-RUN (no actions executed)" if dry_run else "EXECUTE (live actions)"
-    print(f"=== Security Auditor Agent ===")
-    print(f"Target: {authorized_target.name} ({authorized_target.host})")
-    print(f"Agents: {requested_agents}")
-    print(f"Mode:   {mode}")
-    print()
-
-    results: list[AgentResult] = []
-    for agent_key in requested_agents:
-        agent_cls = AGENT_REGISTRY[agent_key]
-        agent = agent_cls(guard, dry_run=dry_run)
-        if agent_key in PATH_BASED_AGENTS:
-            agent_target = args.code_path
-        else:
-            agent_target = authorized_target.host
-            if agent_key in ("webapp", "api", "llm") and authorized_target.web_port:
-                agent_target = f"{authorized_target.host}:{authorized_target.web_port}"
-            elif agent_key == "infra" and authorized_target.tls_port:
-                agent_target = f"{authorized_target.host}:{authorized_target.tls_port}"
-        logger.info(f"Running {agent.name} against {agent_target}")
-        try:
-            result = agent.run(agent_target)
-        except Exception as e:  # noqa: BLE001 - one agent's failure shouldn't kill the run
-            logger.error(f"{agent.name} failed: {e}")
-            result = AgentResult(
-                agent_name=agent.name, target=agent_target,
-                timestamp=agent._now(), status="error", error=str(e),
-            )
-        results.append(result)
-        print(f"--- {agent.name} ---")
-        print(f"status: {result.status}")
-        for finding in result.findings:
-            print(f"  finding: {finding}")
-        print()
-
-    reports_dir = Path(__file__).resolve().parent.parent / "reports"
-    reports_dir.mkdir(exist_ok=True)
-    out_path = reports_dir / f"{authorized_target.name}-results.json"
-    out_path.write_text(json.dumps([r.to_dict() for r in results], indent=2))
-    print(f"Results written to {out_path}")
-
-    evidence = EvidenceCollector().collect(results)
-    evidence_path = reports_dir / f"{authorized_target.name}-evidence.json"
-    evidence_path.write_text(json.dumps(evidence, indent=2))
-    print(f"Evidence bundle written to {evidence_path}")
-
-    diff = None
-    if not dry_run:
-        # dry-run produces no real findings, so history/diffing is skipped --
-        # recording a dry-run's (empty/placeholder) findings as a "run" would
-        # corrupt the history used for diffing real scans against each other.
-        history = HistoryStore()
-        previous_run = history.get_previous_run(authorized_target.name)
-        diff = compute_diff(
-            previous_findings=previous_run["findings"] if previous_run else [],
-            current_findings=evidence["findings"],
-            is_first_run=previous_run is None,
-        )
-        history.save_run(authorized_target.name, evidence["generated_at"], evidence["findings"])
-
-        diff_path = reports_dir / f"{authorized_target.name}-diff.json"
-        diff_path.write_text(json.dumps(diff, indent=2))
-        print(f"Diff written to {diff_path}")
-        if diff["is_first_run"]:
-            print("  first run for this target -- no prior history to compare against")
-        else:
-            print(f"  {len(diff['new_findings'])} new, {len(diff['resolved_findings'])} resolved, "
-                  f"{len(diff['unchanged_findings'])} unchanged since last run")
-
-    report = ReportGenerator().generate(evidence, diff=diff)
-    report_path = reports_dir / f"{authorized_target.name}-report.md"
-    report_path.write_text(report)
-    print(f"Report written to {report_path}")
-
-    if args.ai_triage:
-        triage_agent = AiTriageAnalyzer(guard, dry_run=dry_run)
-        logger.info("Running ai-triage-analyzer over evidence bundle")
-        triage_result = triage_agent.run(evidence)
-        narrative = next(
-            (f["narrative"] for f in triage_result.findings if f["type"] == "ai-triage-narrative"),
-            None,
-        )
-        if narrative:
-            triage_path = reports_dir / f"{authorized_target.name}-ai-triage.md"
-            triage_path.write_text(
-                "<!-- AI-GENERATED: this narrative was produced by Claude reading the "
-                "evidence bundle below. Verify against the deterministic report.md before "
-                "acting on it. -->\n\n# AI Triage Narrative\n\n" + narrative + "\n"
-            )
-            print(f"AI triage narrative written to {triage_path}")
-        else:
-            print(f"AI triage did not produce a narrative: {triage_result.findings}")
-
-    if diff is not None and diff["has_new_findings"]:
-        return EXIT_NEW_FINDINGS
-    return EXIT_OK
+    result = run_scan(
+        guard, authorized_target, requested_agents,
+        code_path=args.code_path, execute=args.execute, ai_triage=args.ai_triage,
+    )
+    return result["exit_code"]
 
 
 if __name__ == "__main__":

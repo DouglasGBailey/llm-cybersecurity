@@ -1,19 +1,23 @@
 """Pure diffing of two finding lists (previous run vs. current run).
 
 Uses the same content-based identity approach EvidenceCollector already
-uses for dedup (json.dumps(finding, sort_keys=True)), minus the `seen_by`
-field -- which agent observed a finding isn't part of the finding's
-identity across runs, so two otherwise-identical findings with different
-`seen_by` lists must still be treated as the same finding.
+uses for dedup (json.dumps(finding, sort_keys=True)), minus derived
+metadata fields (`seen_by`, `compliance`) that aren't part of a finding's
+identity across runs -- which agent observed it, and what compliance tags
+it currently carries, can both change without the underlying finding being
+a different finding (e.g. a second agent later corroborating it, or the
+compliance mapping being edited).
 """
 from __future__ import annotations
 
 import json
 from typing import Any
 
+_DERIVED_FIELDS = ("seen_by", "compliance")
+
 
 def _finding_signature(finding: dict[str, Any]) -> str:
-    core = {k: v for k, v in finding.items() if k != "seen_by"}
+    core = {k: v for k, v in finding.items() if k not in _DERIVED_FIELDS}
     return json.dumps(core, sort_keys=True, default=str)
 
 

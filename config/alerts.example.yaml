@@ -1,0 +1,24 @@
+# Copy to config/alerts.yaml to enable email alerting on new findings.
+# Alerting is opt-in: with no alerts.yaml present, the orchestrator simply
+# skips alerting entirely (no error). It only fires when a diff reports
+# has_new_findings -- see src/diff_engine.py and the "Scheduled Scanning &
+# Diffing" section of README.md.
+#
+# Credentials are NEVER written here directly. username_env/password_env
+# are the NAMES of environment variables the orchestrator reads at send
+# time -- set them in your shell/cron/systemd environment, not in this file.
+
+smtp_host: smtp.example.com
+smtp_port: 587
+use_tls: true
+
+# Leave both unset if your SMTP relay doesn't require auth (e.g. an
+# internal relay). Otherwise set these two env var NAMES and export the
+# actual credentials wherever the scan runs (cron environment, systemd
+# EnvironmentFile, etc).
+username_env: ALERT_SMTP_USERNAME
+password_env: ALERT_SMTP_PASSWORD
+
+from_addr: noreply@terminalvelocityai.tech
+to_addrs:
+  - you@example.com

@@ -116,3 +116,50 @@ def test_diff_section_no_changes_message_when_nothing_changed():
     assert "## Changes Since Last Scan" in report
     assert "No changes" in report
     assert "1 finding(s) unchanged" in report
+
+
+def test_compliance_coverage_section_lists_mapped_controls():
+    results = [make_result("webapp-analyzer", "127.0.0.1", [
+        {"type": "missing-security-headers", "headers": ["CSP"]},
+    ])]
+    evidence = EvidenceCollector().collect(results)
+    report = ReportGenerator().generate(evidence)
+
+    assert "### Compliance Coverage" in report
+    assert "OWASP Top 10 2021" in report
+    assert "A05:2021 - Security Misconfiguration" in report
+
+
+def test_compliance_coverage_section_empty_message_when_nothing_maps():
+    results = [make_result("recon-agent", "127.0.0.1", [
+        {"type": "dns-resolution", "records": ["127.0.0.1"]},
+    ])]
+    evidence = EvidenceCollector().collect(results)
+    report = ReportGenerator().generate(evidence)
+
+    assert "### Compliance Coverage" in report
+    assert "No findings map to a tracked compliance control." in report
+
+
+def test_detailed_findings_show_compliance_tags_inline():
+    results = [make_result("infra-analyzer", "127.0.0.1", [
+        {"type": "tls-certificate-expired", "not_after": "2020-01-01T00:00:00+00:00"},
+    ])]
+    evidence = EvidenceCollector().collect(results)
+    report = ReportGenerator().generate(evidence)
+
+    findings_section = report.split("## Detailed Findings")[1].split("## Raw Agent Results")[0]
+    assert "OWASP Top 10 2021" in findings_section
+    assert "PCI DSS 4.0" in findings_section
+
+
+def test_compliance_field_not_leaked_into_diff_or_findings_key_value_dump():
+    results = [make_result("webapp-analyzer", "127.0.0.1", [
+        {"type": "missing-security-headers", "headers": ["CSP"]},
+    ])]
+    evidence = EvidenceCollector().collect(results)
+    diff = compute_diff(previous_findings=[], current_findings=evidence["findings"], is_first_run=False)
+    report = ReportGenerator().generate(evidence, diff=diff)
+
+    # "compliance" itself should never appear as a raw "compliance: [...]" dict dump
+    assert "compliance: [" not in report

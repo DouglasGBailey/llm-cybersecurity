@@ -66,3 +66,21 @@ def test_agent_results_preserved_in_evidence():
     evidence = EvidenceCollector().collect(results)
 
     assert evidence["agent_results"] == [results[0].to_dict()]
+
+
+def test_findings_enriched_with_compliance_tags_for_mapped_type():
+    results = [make_result("webapp-analyzer", "127.0.0.1", [
+        {"type": "missing-security-headers", "headers": ["CSP"]},
+    ])]
+    evidence = EvidenceCollector().collect(results)
+
+    assert "compliance" in evidence["findings"][0]
+    assert evidence["findings"][0]["compliance"]
+    assert any(t["framework"] == "OWASP Top 10 2021" for t in evidence["findings"][0]["compliance"])
+
+
+def test_unmapped_type_gets_empty_compliance_list_not_missing_key():
+    results = [make_result("recon-agent", "127.0.0.1", [{"type": "dns-resolution", "records": ["127.0.0.1"]}])]
+    evidence = EvidenceCollector().collect(results)
+
+    assert evidence["findings"][0]["compliance"] == []
