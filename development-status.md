@@ -308,9 +308,46 @@ type checker (mypy/pyright) is added to CI later, revisit this then.
 
 **Verification**: all fixes have accompanying tests; `pytest tests/ -v`
 green throughout the fix pass (140 → 154 tests as fixes were added). No
-live DVWA re-verification was needed for this pass — every fix is either
-pure validation/logging logic covered by mocked-HTTP tests (matching the
-existing `test_exploit_agent.py` pattern) or a non-behavioral rename/dedup.
+live DVWA re-verification was needed for the audit-fix pass itself — every
+fix is either pure validation/logging logic covered by mocked-HTTP tests
+(matching the existing `test_exploit_agent.py` pattern) or a
+non-behavioral rename/dedup.
+
+**Live DVWA re-verification (separate follow-up)**: restarted
+`llm-cybersec-dvwa` (had been stopped) to run a real `--agents exploit
+--execute` scan and confirm the fixes above didn't regress live behavior.
+Apache inside the container hadn't come back up on `docker start` — its
+init script saw a stale PID file from before the earlier `docker stop` and
+skipped starting it; fixed with `docker exec ... service apache2 start`
+(a container quirk, not a platform bug). All four vuln classes confirmed
+again with real data (5 DVWA user rows via SQLi, XSS reflection,
+`whoami`/`hostname` output, `admin`/`password` login) — the SQLi/
+credentials fixes don't reject legitimate config.
+
+This live pass caught a **real bug the audit missed**: fix #4 redacted
+credentials inside `ExploitAgent._get`/`_post`'s own logging, but
+`orchestrator.py`'s per-agent `logger.info(f"Running {agent.name} against
+{agent_target}")` line logs `agent_target` directly, and for exploit
+agents that's the raw `ExploitTarget` object — whose `str()`/repr includes
+`known_vulnerabilities`, i.e. the plaintext `auth_setup`/`credentials`
+passwords, unredacted. Confirmed the leak by grepping
+`logs/agent-activity.jsonl` for the real DVWA password after a live run —
+found it, twice. Fixed by computing a safe `target_label` (agent name +
+host only, never the full object) once per agent iteration, used for both
+the log line and — this closes a **second**, more serious latent bug —
+the `except Exception` branch's `AgentResult(target=...)`. That branch
+previously stored the raw `ExploitTarget` object as `target` whenever
+`ExploitAgent.run()` raised before returning (e.g. an unauthorized exploit
+target), which would have crashed `json.dumps()` when `results.json` was
+written — turning any exploit-agent startup failure into an unhandled
+crash of the whole scan instead of a clean per-agent error. Both bugs
+share one fix and one root cause: never let a raw `ExploitTarget` reach a
+log line, a `print`, or a serialized field. Two new regression tests in
+`tests/test_orchestrator.py`:
+`test_run_scan_never_logs_exploit_target_credentials` and
+`test_run_scan_handles_exploit_agent_exception_without_crashing` (the
+latter caught the JSON-serialization crash directly — it failed before
+the fix). 156/156 tests passing after this fix.
 
 ### Known Issues / Limitations
 - Carried forward from prior sessions (nmap/semgrep optional, LLM probe

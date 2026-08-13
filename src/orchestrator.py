@@ -109,13 +109,23 @@ def run_scan(
                 agent_target = f"{authorized_target.host}:{authorized_target.web_port}"
             elif agent_key == "infra" and authorized_target.tls_port:
                 agent_target = f"{authorized_target.host}:{authorized_target.tls_port}"
-        logger.info(f"Running {agent.name} against {agent_target}")
+        # ExploitTarget's repr (and, unredacted, its str()) includes its
+        # known_vulnerabilities config, which can contain plaintext
+        # auth_setup/credentials passwords -- never log or persist the
+        # object itself, only a safe name/host label. This also keeps
+        # AgentResult.target JSON-serializable in the except branch below,
+        # where agent_target would otherwise be the raw dataclass.
+        target_label = (
+            f"{agent_target.name} ({agent_target.host})"
+            if agent_key in EXPLOIT_AGENTS else agent_target
+        )
+        logger.info(f"Running {agent.name} against {target_label}")
         try:
             result = agent.run(agent_target)
         except Exception as e:  # noqa: BLE001 - one agent's failure shouldn't kill the run
             logger.error(f"{agent.name} failed: {e}")
             result = AgentResult(
-                agent_name=agent.name, target=agent_target,
+                agent_name=agent.name, target=target_label,
                 timestamp=agent._now(), status="error", error=str(e),
             )
         results.append(result)
