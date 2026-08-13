@@ -1,5 +1,7 @@
 # LLM Cybersecurity Agent Platform
 
+[![Tests](https://github.com/DouglasGBailey/llm-cybersecurity/actions/workflows/tests.yml/badge.svg)](https://github.com/DouglasGBailey/llm-cybersecurity/actions/workflows/tests.yml)
+
 A controlled, multi-agent security assessment platform for learning to build
 scoped, auditable security automation — not a "hack anything" LLM wrapper.
 
