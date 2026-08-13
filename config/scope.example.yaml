@@ -1,0 +1,43 @@
+# Copy this file to scope.yaml and fill in ONLY targets you own or are
+# explicitly authorized to test (your own lab VMs/containers, local
+# HackTheBox/TryHackMe VPN ranges you're actively enrolled in, etc).
+#
+# Nothing in this platform will run against a target that is not listed
+# in authorized_targets below. This file is the single source of truth
+# for scope -- agents cannot override it.
+
+# IMPORTANT (shared hosts): an authorized `host` here does not authorize
+# every port on that host -- it only authorizes what a target actually
+# runs. InfraAnalyzer's TLS certificate check never guesses port 443; it
+# only runs when a target explicitly sets `tls_port`. On a machine that
+# also runs unrelated real services on other ports of the same IP, an
+# unset tls_port means "skip the TLS check", not "assume 443" -- this
+# avoids accidentally probing something that isn't your lab target.
+
+authorized_targets:
+  # Examples -- replace with your actual lab targets:
+  - name: local-dvwa
+    host: 127.0.0.1
+    web_port: 8080  # optional: only needed if the web app isn't on port 80
+    # tls_port intentionally unset -- DVWA here is plain HTTP, no TLS
+    notes: "DVWA running in local docker container"
+  - name: local-juiceshop
+    host: 127.0.0.1
+    notes: "OWASP Juice Shop, localhost:3000"
+  # CIDR ranges are also supported for a lab subnet:
+  # - name: lab-subnet
+  #   host: 192.168.56.0/24
+  #   notes: "Local VirtualBox host-only lab network"
+
+# Targets that must NEVER be scanned even if they'd otherwise match a CIDR
+# range above (e.g. the gateway, a shared host, etc).
+excluded:
+  []
+  # - 192.168.56.1
+
+# Requests-per-second style throttle agents must respect against any target.
+max_scan_rate: 5
+
+notes: >
+  This scope file governs ALL agents in this platform. Only add hosts you
+  personally own/operate or are explicitly authorized to test.
