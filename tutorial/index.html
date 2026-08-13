@@ -188,7 +188,7 @@
       <h1>LLM Cybersecurity Agent Platform — Tutorial</h1>
     </div>
     <div class="progress-summary">
-      <span id="progress-text">0 of 12 modules complete</span>
+      <span id="progress-text">0 of 13 modules complete</span>
       <div class="progress-bar"><div class="progress-bar-fill" id="progress-fill"></div></div>
     </div>
     <nav class="modules" id="nav-list"></nav>
@@ -967,6 +967,150 @@ SELECT first_name, last_name FROM users WHERE user_id = '<span class="s1">1</spa
 
 // ---------------------------------------------------------------- 10
 {
+  id: "k8s",
+  title: "Kubernetes Cluster Hygiene",
+  sub: "The same enumerate-and-flag philosophy from Modules 2-7, pointed at a cluster instead of a host.",
+  body: `
+    <p>Everything so far has scanned individual hosts and apps. This module
+    covers <code class="inline">KubernetesAnalyzer</code>, the platform's
+    seventh scanning agent — it applies the same read-only, declared-not-
+    discovered philosophy to an entire cluster.</p>
+
+    <h3>A cluster is a different kind of target</h3>
+    <p>Unlike every other agent, <code class="inline">KubernetesAnalyzer</code>
+    doesn't take a host/IP. It takes a <strong>kubeconfig context name</strong>
+    — a label for a cluster + credentials your local <code class="inline">kubectl</code>
+    already knows about (<code class="inline">~/.kube/config</code> or
+    <code class="inline">KUBECONFIG</code>). Recall Module 1's rule: scope.yaml
+    is the sole source of truth for what's authorized, and it
+    <strong>never stores real credentials</strong> — only a reference to
+    where they live (env var names for SMTP in Module 12, and here, a
+    context name pointing at your ambient kubeconfig). The platform never
+    reads or stores a cluster's API server URL, token, or certificate
+    directly.</p>
+
+    <p>This gets its own authorization list, <code class="inline">
+    authorized_k8s_clusters</code> — separate from <code class="inline">
+    authorized_targets</code>, the same way Module 9's exploitation targets
+    and Module 6's code paths each got their own list. "I may run
+    <code class="inline">kubectl get</code> against this cluster" is a
+    different claim than "I may scan this network host."</p>
+
+    <h3>Read-only, by the same reasoning as everywhere else</h3>
+    <p><code class="inline">KubernetesAnalyzer</code> only ever runs
+    <code class="inline">kubectl get</code> — never <code class="inline">
+    apply</code>, <code class="inline">create</code>, <code class="inline">
+    delete</code>, or <code class="inline">exec</code>. It checks:</p>
+    <table class="spec">
+      <tr><th>Finding</th><th>What it means</th></tr>
+      <tr><td><code class="inline">k8s-privileged-container</code></td><td>a container's <code class="inline">securityContext.privileged: true</code></td></tr>
+      <tr><td><code class="inline">k8s-container-runs-as-root</code></td><td>a container explicitly sets <code class="inline">runAsUser: 0</code></td></tr>
+      <tr><td><code class="inline">k8s-host-namespace-shared</code></td><td>a pod sets <code class="inline">hostNetwork</code>/<code class="inline">hostPID</code>/<code class="inline">hostIPC</code></td></tr>
+      <tr><td><code class="inline">k8s-missing-resource-limits</code></td><td>containers without CPU/memory limits (a DoS-adjacent risk -- one runaway pod can starve the node)</td></tr>
+      <tr><td><code class="inline">k8s-overly-permissive-clusterrolebinding</code></td><td>a User/ServiceAccount bound to <code class="inline">cluster-admin</code></td></tr>
+      <tr><td><code class="inline">k8s-wildcard-clusterrole</code></td><td>a custom role granting <code class="inline">resources: ["*"], verbs: ["*"]</code></td></tr>
+      <tr><td><code class="inline">k8s-service-publicly-exposed</code></td><td>a <code class="inline">NodePort</code>/<code class="inline">LoadBalancer</code> Service</td></tr>
+      <tr><td><code class="inline">k8s-namespace-missing-network-policy</code></td><td>a namespace with zero <code class="inline">NetworkPolicy</code> objects</td></tr>
+      <tr><td><code class="inline">k8s-default-serviceaccount-automounts-token</code></td><td>a namespace's <code class="inline">default</code> ServiceAccount doesn't disable token automount</td></tr>
+    </table>
+
+    <div class="callout warn">
+      <span class="callout-label">Expected findings vs. surprising ones</span>
+      <p>Run this against a real cluster and you'll see findings on
+      <code class="inline">kube-system</code> pods too — <code class="inline">
+      kube-proxy</code> genuinely is privileged and uses <code class="inline">
+      hostNetwork</code>, by design. The platform reports what's <em>true</em>,
+      not what's surprising — it doesn't quietly exempt the control plane from
+      the pod-security checks. It <em>does</em> exempt
+      <code class="inline">kube-system</code>/<code class="inline">kube-public</code>/
+      <code class="inline">kube-node-lease</code> from the network-policy and
+      default-ServiceAccount checks, since those are cluster-managed
+      namespaces, not something you configured yourself. Knowing which
+      findings are "expected baseline" vs. "something you introduced" is
+      itself a real triage skill.</p>
+    </div>
+
+    <h3>Works on the smallest cluster you have</h3>
+    <p>None of these checks assume multiple nodes — everything is
+    namespace/resource scoped. A single-node <code class="inline">kind</code>
+    or <code class="inline">minikube</code> cluster is a perfectly valid,
+    fully-covered target.</p>
+  `,
+  lab: `
+    <div class="lab-label"><span class="dot"></span>Hands-on: scan a real cluster</div>
+    <p>This lab uses <a href="https://github.com/madhuakula/kubernetes-goat" target="_blank" rel="noopener">Kubernetes Goat</a>
+    — the k8s equivalent of DVWA: a purpose-built, intentionally-vulnerable
+    cluster with named scenarios, not ad-hoc misconfigured YAML. If it's not
+    already deployed:</p>
+    <pre class="code"><span class="k1">kind</span> create cluster <span class="k1">--name</span> k8s-goat-lab
+git clone https://github.com/madhuakula/kubernetes-goat.git
+<span class="k1">cd</span> kubernetes-goat && bash setup-kubernetes-goat.sh</pre>
+    <p>Add <code class="inline">local-k8s-goat</code> to both <code class="inline">
+    authorized_targets</code> (any host value -- it's a placeholder, since
+    reports/history are keyed by this entry's name, not a real address) and
+    <code class="inline">authorized_k8s_clusters</code> (with the real
+    kubeconfig context, e.g. <code class="inline">kind-k8s-goat-lab</code>)
+    in <code class="inline">scope.yaml</code>. <code class="inline">
+    config/scope.example.yaml</code> has the full block as a reference.</p>
+    <pre class="code">python -m src.orchestrator <span class="k1">--scope</span> config/scope.yaml <span class="k1">--target</span> local-k8s-goat <span class="k1">--agents</span> k8s <span class="k1">--execute</span></pre>
+    <p>Expect real findings including Kubernetes Goat's own
+    <code class="inline">insecure-rbac</code> scenario — a ServiceAccount
+    bound directly to <code class="inline">cluster-admin</code> — plus
+    privileged containers, shared host namespaces, an exposed
+    <code class="inline">NodePort</code> service, and missing network
+    policies across its namespaces.</p>
+    <div class="callout good">
+      <span class="callout-label">Run it twice</span>
+      <p>Run the same command again. You should see <code class="inline">
+      0 new, 0 resolved</code> in the diff output and exit code
+      <code class="inline">0</code> instead of <code class="inline">3</code> —
+      Module 12's history/diffing (further ahead) works identically for
+      this agent's findings, with zero special-casing needed.</p>
+    </div>
+    <p>When you're done experimenting, tear the cluster down with
+    <code class="inline">kind delete cluster --name k8s-goat-lab</code> —
+    or leave it running as a standing lab target, the same way DVWA stays
+    up between sessions.</p>
+  `,
+  quiz: [
+    {
+      q: "Why does authorized_k8s_clusters store a kubeconfig context name instead of a cluster API URL and token?",
+      options: [
+        "Context names are shorter to type",
+        "So no cluster credential ever has to be stored in scope.yaml -- the ambient kubeconfig is the sole credential source, same pattern as env-var-referenced SMTP credentials",
+        "kubectl requires it",
+        "It's a Kubernetes API requirement"
+      ],
+      correct: 1,
+      explain: "Same principle as everywhere else in this platform: config references credentials, it never stores them directly."
+    },
+    {
+      q: "Why does KubernetesAnalyzer still report kube-proxy as a privileged, hostNetwork container instead of exempting it?",
+      options: [
+        "It's a bug that hasn't been fixed",
+        "The platform reports what's factually true, not just what's surprising -- kube-proxy genuinely runs with those settings by design",
+        "kube-system is scanned by a different agent",
+        "Privileged control-plane pods are actually a false positive"
+      ],
+      correct: 1,
+      explain: "kube-system IS exempted from the network-policy and default-ServiceAccount checks (cluster-managed, not operator-configured) -- but not from the pod-security checks, since a genuinely privileged pod is still genuinely privileged."
+    },
+    {
+      q: "What must be true for KubernetesAnalyzer's checks to work correctly against a single-node cluster?",
+      options: [
+        "Nothing extra -- every check is namespace/resource scoped, not dependent on multi-node topology",
+        "You need at least 3 nodes for RBAC checks to run",
+        "Single-node clusters must disable the missing-resource-limits check",
+        "NetworkPolicy checks require a multi-node CNI"
+      ],
+      correct: 0,
+      explain: "This was a deliberate design constraint from the start -- a single-node kind/minikube cluster is a fully valid, fully-covered target."
+    }
+  ]
+},
+
+// ---------------------------------------------------------------- 11
+{
   id: "compliance",
   title: "Compliance Frameworks and Reporting",
   sub: "A finding is more useful when it maps to a language the rest of the business already speaks.",
@@ -980,11 +1124,11 @@ SELECT first_name, last_name FROM users WHERE user_id = '<span class="s1">1</spa
     <p>The most widely recognized web application risk list, updated
     periodically by the OWASP Foundation. The ten categories, briefly:</p>
     <table class="spec">
-      <tr><td><strong>A01</strong></td><td>Broken Access Control</td></tr>
+      <tr><td><strong>A01</strong></td><td>Broken Access Control (overly permissive k8s RBAC -- Module 10)</td></tr>
       <tr><td><strong>A02</strong></td><td>Cryptographic Failures</td></tr>
       <tr><td><strong>A03</strong></td><td>Injection (SQLi, XSS, command injection -- Module 8)</td></tr>
       <tr><td><strong>A04</strong></td><td>Insecure Design</td></tr>
-      <tr><td><strong>A05</strong></td><td>Security Misconfiguration</td></tr>
+      <tr><td><strong>A05</strong></td><td>Security Misconfiguration (privileged/root containers -- Module 10)</td></tr>
       <tr><td><strong>A06</strong></td><td>Vulnerable and Outdated Components</td></tr>
       <tr><td><strong>A07</strong></td><td>Identification and Authentication Failures (weak credentials -- Module 9)</td></tr>
       <tr><td><strong>A08</strong></td><td>Software and Data Integrity Failures</td></tr>
@@ -1040,7 +1184,7 @@ SELECT first_name, last_name FROM users WHERE user_id = '<span class="s1">1</spa
   ]
 },
 
-// ---------------------------------------------------------------- 11
+// ---------------------------------------------------------------- 12
 {
   id: "ops",
   title: "Running a Real Security Program",
@@ -1130,24 +1274,28 @@ SELECT first_name, last_name FROM users WHERE user_id = '<span class="s1">1</spa
   ]
 },
 
-// ---------------------------------------------------------------- 12
+// ---------------------------------------------------------------- 13
 {
   id: "next",
   title: "Where to Go Next",
   sub: "You've run a real assessment pipeline end to end. Here's how to keep building the skill.",
   body: `
     <p>You've now walked the same pipeline a working security engineer
-    uses: reconnaissance, hygiene assessment across five different surface
-    areas, static code review, real exploitation of four major vulnerability
-    classes with genuine proof of impact, compliance mapping, and the
-    operational layer (diffing, alerting, dashboards) that turns a one-off
-    report into an ongoing program.</p>
+    uses: reconnaissance, hygiene assessment across six different surface
+    areas (web app, API, infrastructure, code, LLM app, and Kubernetes
+    cluster), static code review, real exploitation of four major
+    vulnerability classes with genuine proof of impact, compliance mapping,
+    and the operational layer (diffing, alerting, dashboards) that turns a
+    one-off report into an ongoing program.</p>
 
     <h3>Practice targets beyond DVWA</h3>
     <ul>
       <li><strong>OWASP Juice Shop</strong> — a more modern, JavaScript-heavy
       deliberately-vulnerable app (already referenced in this project's
       example scope file)</li>
+      <li><strong>Kubernetes Goat</strong> — the k8s equivalent of DVWA,
+      used in Module 10's lab; more named vulnerable scenarios than what's
+      deployed by default are worth exploring in its own docs</li>
       <li><strong>TryHackMe</strong> and <strong>Hack The Box</strong> —
       guided and unguided practice environments spanning many more
       vulnerability classes and full attack chains</li>

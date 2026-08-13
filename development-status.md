@@ -14,12 +14,18 @@ and a full hands-on tutorial site (`tutorial/index.html`), committed as
 `ee0eac0`/`859e699`; (2) ran a 9-agent parallel `total-code-intelligence`
 full-codebase audit, implemented fixes for every finding (6 critical, 4
 important, 5 suggestion-tier), then caught and fixed a real credential-leak
-bug the audit itself missed during live DVWA re-verification; (3) **this
-session** — added a seventh scanning agent, `KubernetesAnalyzer`, in
-response to an explicit request to add k8s cluster scanning (minimum
-1-node support), with its own separately-authorized scope model
-(`authorized_k8s_clusters`) mirroring the `ExploitAgent`/`CodeAnalyzer`
-precedent of a dedicated authorization list per resource type.
+bug the audit itself missed during live DVWA re-verification; (3) added a
+seventh scanning agent, `KubernetesAnalyzer`, in response to an explicit
+request to add k8s cluster scanning (minimum 1-node support), with its own
+separately-authorized scope model (`authorized_k8s_clusters`) mirroring
+the `ExploitAgent`/`CodeAnalyzer` precedent of a dedicated authorization
+list per resource type, live-verified against a disposable `kind` cluster
+seeded with hand-written misconfigs; (4) **this session** — stood up a
+second, standing k8s lab target by deploying the third-party
+"Kubernetes Goat" (madhuakula/kubernetes-goat) intentionally-vulnerable
+project on a persistent local `kind` cluster, the k8s equivalent of DVWA,
+confirming `KubernetesAnalyzer` generalizes correctly beyond
+self-authored test manifests.
 
 ## Current Project State
 
@@ -453,6 +459,86 @@ rendering (severity grouping, compliance tags) against the real evidence
 bundle. Cluster torn down afterward (`kind delete cluster`), no lingering
 state (`kind get clusters` → none).
 
+### This session — Kubernetes Goat as a standing k8s lab target
+
+User asked to "point KubernetesAnalyzer at additional lab targets" —
+the direct k8s analog of an earlier next-step ("Point ExploitAgent at
+additional lab targets (Juice Shop, etc.)"). Asked one clarifying
+question first (matching this project's pattern of confirming before
+building extra infrastructure): a simple standing `kind` cluster seeded
+with more hand-written misconfigs, the third-party "Kubernetes Goat"
+project, or both. User chose **Kubernetes Goat**
+(`madhuakula/kubernetes-goat` — the k8s equivalent of DVWA: a
+purpose-built, intentionally-vulnerable cluster with named scenarios
+rather than ad-hoc misconfigured YAML).
+
+**Setup**: created a new persistent single-node `kind` cluster
+(`k8s-goat-lab`, kubeconfig context `kind-k8s-goat-lab` — deliberately
+separate from the disposable cluster used for initial live verification,
+which was already torn down). Cloned `kubernetes-goat` to `/tmp` (not
+vendored into the repo — 199MB third-party clone, same reasoning DVWA's
+Docker image isn't vendored either). Confirmed `helm` was already
+installed, ran `setup-kubernetes-goat.sh` against the new context, which
+deploys ~10 vulnerable scenarios across 5 namespaces (`default`,
+`big-monolith`, `secure-middleware`, plus `kube-system`/
+`local-path-storage`) including its own `insecure-rbac` scenario (a
+`superadmin` ServiceAccount bound to `cluster-admin`).
+
+**Config**: added `local-k8s-goat` to both `authorized_targets` (a
+placeholder host, since k8s scanning doesn't use it — documented inline
+why the entry still needs to exist) and `authorized_k8s_clusters`
+(context `kind-k8s-goat-lab`) in `config/scope.yaml` (gitignored, not
+committed — confirmed via `git check-ignore` before editing). Recreate
+instructions written into the entry's `notes` field.
+
+**Live verification — confirms generalization, not just the original
+design**: ran `--agents k8s --execute` against the real, third-party
+cluster (not self-authored test manifests this time). Every check fired
+correctly on genuinely different infrastructure: `k8s-privileged-container`
+(Kubernetes Goat's `health-check`/`system-monitor` containers),
+`k8s-host-namespace-shared` (hostPID+hostIPC on `system-monitor`, plus the
+expected real `hostNetwork` control-plane pods), `k8s-overly-permissive-
+clusterrolebinding` (caught the `superadmin` binding — Kubernetes Goat's
+own `insecure-rbac` scenario, a genuine third-party finding, not something
+built to match this agent's checks), `k8s-service-publicly-exposed`
+(`internal-proxy-info-app-service` as `NodePort`), missing resource
+limits/network policies/SA-automount across the deployed namespaces, and
+`k8s-node-info` confirming `node_count: 1`. Manually cross-checked for a
+false negative on `k8s-wildcard-clusterrole` (queried `clusterroles`
+directly with a one-off script) — confirmed there genuinely are no
+custom wildcard roles in this deployment (Kubernetes Goat grants
+`cluster-admin` directly rather than via a custom wildcard role), so the
+absence of that finding is correct, not a miss.
+
+**Diffing confirmed working on a second run**: re-ran the same scan —
+`0 new, 0 resolved, 26 unchanged since last run`, exit code `0` (vs. `3`
+on the first/baseline run) — `HistoryStore`/`diff_engine` work correctly
+for this agent's finding shapes with no special-casing needed, same as
+every prior agent.
+
+`local-k8s-goat` is now a **standing** lab target (left running, unlike
+the disposable cluster from the original live-verification pass) —
+`local-dvwa`'s Docker container and `local-k8s-goat`'s `kind` cluster are
+now both persistent, reusable lab infrastructure for this project.
+
+**Tutorial site updated** (mid-session, per a follow-up request): added a
+new Module 10, "Kubernetes Cluster Hygiene," to `tutorial/index.html`,
+between the existing "Hands-On Ethical Exploitation" (now still Module 9)
+and "Compliance Frameworks and Reporting" (renumbered 10→11). Covers the
+kubeconfig-context authorization model, all nine `k8s-*` finding types,
+the deliberate "report kube-system truthfully but exclude it from the
+network-policy/default-SA checks" design choice, and a hands-on lab using
+the newly-deployed `local-k8s-goat` target — including the "run it twice,
+see 0 new/0 resolved" diffing exercise. Renumbered all downstream
+in-module cross-references (`ops`'s SMTP mention was Module 11, now 12;
+etc.) and the "Where to Go Next" module's practice-target list and
+surface-area count (five → six). Verified the module array's JS syntax
+(`node --check`) and structural validity (every module has required
+fields, every quiz question has valid `correct`/`options`/`explain`)
+before considering this done — no browser tools available in this
+environment to screenshot-verify visually, so this is unverified beyond
+static/structural checks; worth an actual browser look next session.
+
 ### Known Issues / Limitations
 - Carried forward from prior sessions (nmap/semgrep optional, LLM probe
   heuristic, exact-content dedup, compliance mapping intentionally
@@ -556,8 +642,11 @@ dashboard, API auth opt-in with localhost-default bind, container
 - `FUNCTIONAL_SPEC.md`/`TECHNICAL_SPEC.md` (prior sessions) — not updated
   for `KubernetesAnalyzer`; both predate it and would need a new capability
   entry (§5-style table row) to stay accurate if relied on again
-- `tutorial/index.html` (prior session) — predates `KubernetesAnalyzer`
-  entirely, no mention to be inaccurate about, but doesn't cover it either
+- `tutorial/index.html` — updated this session with a new Module 10
+  covering `KubernetesAnalyzer` (13 modules total now); still predates the
+  code-intelligence audit fixes, which have no dedicated module (those
+  were internal hardening, not a new user-facing capability, so arguably
+  don't need one)
 
 ### Dependencies
 No new dependencies this session for the Python package itself —
@@ -622,13 +711,17 @@ No new dependencies from the exploitation-design session — `ExploitAgent` uses
    — its database is now initialized and security level set to low, so a
    fresh `docker rm` + re-run will need that setup redone (that's the
    whole point of `resettable: true` — it's expected to be redone)
-4. `KubernetesAnalyzer` has only been live-verified against a disposable
-   `kind` cluster created and torn down for this session — no standing k8s
-   lab target exists (unlike DVWA). If k8s scanning becomes a regular
-   workflow, consider standing up a persistent local cluster the way DVWA
-   is a persistent container, rather than spinning one up per verification
+4. ~~`KubernetesAnalyzer` has only been live-verified against a disposable
+   `kind` cluster~~ — done: `local-k8s-goat` (Kubernetes Goat on a
+   persistent `kind` cluster, context `kind-k8s-goat-lab`) is now a
+   standing k8s lab target, mirroring `local-dvwa`.
 5. `FUNCTIONAL_SPEC.md`/`TECHNICAL_SPEC.md` predate `KubernetesAnalyzer` —
    worth a pass adding it if either doc is relied on again
+6. ~~`tutorial/index.html` predates `KubernetesAnalyzer`~~ — done: new
+   Module 10 added. A browser-based visual check of the new module still
+   hasn't happened (no browser tools available this session) — worth
+   doing next session before calling it fully verified.
+   if the tutorial site is revisited
 
 ### Warnings/Cautions
 Carried forward (never add an unauthorized target; don't loosen
@@ -651,3 +744,12 @@ don't default `src/api.py` to `0.0.0.0`).
 - Do not remove or weaken `ScopeGuard`'s load-time rejection of
   `authorized_exploit_targets` entries missing `resettable: true` — this
   is the load-bearing justification for the entire feature existing.
+- There are now **two** standing, persistent lab targets consuming local
+  resources: `llm-cybersec-dvwa` (Docker container) and the `kind`
+  cluster backing `local-k8s-goat` (context `kind-k8s-goat-lab`, ~10 pods
+  across 5 namespaces). Neither should be torn down without checking
+  first — same caution as always applied to `llm-cybersec-dvwa`. The
+  `/tmp/kubernetes-goat` clone used to deploy it is disposable (manifests
+  are already applied to the live cluster) and won't survive a `/tmp`
+  clear, but the recreate command is in `config/scope.yaml`'s
+  `local-k8s-goat` entry notes if it's ever needed again.
