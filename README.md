@@ -30,9 +30,17 @@ Security Auditor Agent (orchestrator.py)
 ├── Infrastructure Analyzer[working]  TLS cert hygiene, SPF/DMARC/DNSSEC checks
 ├── Code Analyzer          [working]  bandit / semgrep over a local path
 ├── LLM Security Analyzer  [working]  prompt-injection / jailbreak probe suite
-├── Evidence Collector     [working]  aggregates AgentResult -> evidence.json
-├── Report Generator       [working]  evidence.json -> Markdown report
+├── Evidence Collector     [working]  aggregates AgentResult -> evidence.json (+ compliance tags)
+├── Report Generator       [working]  evidence.json -> Markdown report (+ compliance, diff sections)
 └── AI Triage Analyzer     [working]  evidence.json -> Claude-written narrative (opt-in)
+
+Supporting modules (not scanning agents):
+├── history_store.py       SQLite run history, keyed by target
+├── diff_engine.py         new/resolved/unchanged findings vs. last run
+├── alerting.py            email alert on new findings (opt-in, SMTP)
+├── compliance_mapping.py  finding type -> OWASP/CIS/PCI control tags
+├── dashboard.py           static HTML dashboard over history.db
+└── api.py                 REST API wrapping orchestrator.run_scan()
 ```
 
 All six scanning agents plus Evidence Collector and Report Generator are
@@ -73,6 +81,19 @@ exclusions. No other part of the codebase makes scope decisions. Local
 source-code paths (for Code Analyzer) are authorized separately via
 `authorized_code_paths` — "I own this codebase" is a different claim than
 "I'm allowed to scan this network host."
+
+### Compliance framework mapping
+
+`EvidenceCollector` tags each finding with the compliance controls it maps
+to (`src/compliance_mapping.py`) — primarily OWASP Top 10 2021, plus a
+second framework (CIS Controls v8 or PCI DSS 4.0) where a clear mapping
+exists, and the OWASP Top 10 for LLM Applications for `LlmSecurityAnalyzer`
+findings. Not every finding type is mapped — pure informational findings
+(`dns-resolution`, `page-title`, ...) intentionally have no tag; inventing
+one would be noise. `report.md` shows tags inline on each finding plus a
+"Compliance Coverage" summary (which controls this scan actually touches,
+by finding count). This is metadata, not identity — it never affects
+dedup (`EvidenceCollector`) or diffing (`diff_engine`).
 
 ## Setup
 
@@ -231,6 +252,133 @@ you can hook into `OnFailure=` for a notification unit.
 `data/` is gitignored — it's per-installation scan history of your
 specific targets, not something to commit.
 
+### Email alerting on new findings
+
+Opt-in, like `--ai-triage`: copy `config/alerts.example.yaml` to
+`config/alerts.yaml` and the orchestrator will email you whenever a diff
+reports `has_new_findings` (i.e. on exit code `3`). With no `alerts.yaml`
+present, alerting is silently skipped — no error, no configuration
+required to use the rest of the platform.
+
+```bash
+cp config/alerts.example.yaml config/alerts.yaml
+# edit config/alerts.yaml: smtp_host, smtp_port, from_addr, to_addrs
+```
+
+Credentials are never written into `alerts.yaml` directly — it references
+environment variable *names* (`username_env`/`password_env`), resolved at
+send time:
+
+```bash
+export ALERT_SMTP_USERNAME=your-smtp-username
+export ALERT_SMTP_PASSWORD=your-smtp-password
+```
+
+Set these in whatever environment actually runs the scan (your shell,
+cron's environment, or a systemd `EnvironmentFile=`). A send failure (bad
+host, auth failure, network issue) is logged and swallowed — alerting can
+never cause a scan run itself to fail.
+
+## Dashboard
+
+`python -m src.dashboard --scope config/scope.yaml` generates a
+self-contained static HTML file (`reports/dashboard.html`, open directly
+in a browser) — no live server, no new web-framework dependency, same
+reasoning that ruled out a scheduler daemon. For each target in
+`scope.yaml`: a finding-count trend (inline SVG sparkline, no chart
+library) over recent runs from `data/history.db`, the latest run's
+severity breakdown, the latest diff (new/resolved counts), compliance
+coverage, and a link to that target's `report.md`. Targets with no run
+history yet just show "No runs yet." Regenerate by re-running the command
+after new scans.
+
+## REST API
+
+`src/api.py` (FastAPI) wraps the same `run_scan()` function the CLI uses —
+one place the scan logic lives, two ways to trigger it. This is what
+unlocks CI integration, a future UI, or running scans as Kubernetes Jobs
+instead of shelling out to the CLI directly.
+
+```bash
+python -m src.api                    # defaults to 127.0.0.1:8000
+python -m src.api --host 0.0.0.0 --port 8080   # explicit, deliberate exposure
+```
+
+| Method & path | Behavior |
+|---|---|
+| `GET /health` | `{"status": "ok"}` — always open, no auth |
+| `GET /targets` | List `authorized_targets` from scope.yaml |
+| `POST /scans` | Body: `{target, agents, execute, code_path, ai_triage}`. Runs synchronously, blocks until the scan finishes |
+| `GET /scans/{target}/report` | The Markdown report |
+| `GET /scans/{target}/evidence` | The evidence bundle JSON |
+| `GET /scans/{target}/diff` | The diff JSON (`404` if no diff yet) |
+| `GET /dashboard` | The dashboard HTML, regenerated fresh on every request |
+
+Scan execution is **synchronous** for this first pass — a `POST /scans`
+request blocks for the scan's duration. No task queue, matching the
+platform's "don't add infrastructure before there's a real need for it"
+precedent (the same reasoning that ruled out a scheduler daemon and a live
+dashboard server elsewhere in this project).
+
+**Auth is opt-in, not required**, for this first pass: set `API_KEY` to
+require `Authorization: Bearer <key>` on every endpoint except `/health`.
+With `API_KEY` unset, the API still works — but:
+- it **binds to `127.0.0.1` by default** when run directly (`--host
+  0.0.0.0` or `API_HOST` is a deliberate choice, not the default)
+- it prints a loud startup warning: `API_KEY not set -- all endpoints are
+  UNAUTHENTICATED. Do not bind beyond localhost without setting one.`
+
+This exists because an earlier session accidentally exposed a *different*
+local tool (the static dashboard server) on a public interface with no
+auth in front of it. The localhost-default + visible warning here means
+exposing this API beyond your own machine is always a deliberate action,
+not an accident — while still respecting the explicit decision not to
+require auth for local/dev use.
+
+Config is read from env vars per-request: `SCOPE_PATH`, `REPORTS_DIR`,
+`HISTORY_DB_PATH`, `API_KEY`, `API_HOST`, `API_PORT`.
+
+## Docker
+
+```bash
+docker build -t llm-cybersecurity .
+docker run -d --name llm-cybersecurity \
+  -p 127.0.0.1:8000:8000 \
+  -v $(pwd)/config/scope.yaml:/config/scope.yaml:ro \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/reports:/app/reports \
+  -e API_KEY=your-key-here \
+  llm-cybersecurity
+```
+
+The image installs `nmap`/`dig`/`whois`/`bandit`. `semgrep` and the
+`claude` CLI (for `--ai-triage`) are not baked in — install them in a
+custom image layer if you need those inside the container. `config/
+scope.yaml`, `config/alerts.yaml`, `data/`, `reports/`, and `logs/` are
+**not** part of the image (user-specific, gitignored) — mount them as
+volumes, as shown above.
+
+The `-p 127.0.0.1:8000:8000` above only publishes the port to your own
+machine's loopback interface, even though the container's own `CMD` binds
+`0.0.0.0` internally (that's correct/standard for a container — the
+`0.0.0.0` there just means "accept connections arriving inside the
+container," and `docker run -p`'s host-side address is what actually
+controls external reachability). Change the host-side address deliberately
+if you want it reachable beyond your own machine.
+
+## Kubernetes
+
+`k8s/scan-job.example.yaml` (a one-off `Job` running a single scan, the
+K8s equivalent of `scripts/run-scheduled-scan.sh`) and `k8s/
+api-deployment.example.yaml` (`Deployment` + `Service` for the API) are
+**illustrative examples**, not tested against a real cluster (this project
+has none to validate against) — adapt the image reference, secret names,
+and PVC claims before using. This project deliberately hasn't invested
+further in Kubernetes: the actual bottleneck for "enterprise-grade" right
+now is auth/multi-tenancy/API surface (the API above is the first piece of
+that), not compute scale. K8s earns its complexity once there's a real
+need to run many concurrent, isolated scans — not before.
+
 ## Testing
 
 ```bash
@@ -238,13 +386,15 @@ source venv/bin/activate
 python -m pytest tests/ -v
 ```
 
-84/84 tests passing as of this build (scope guard: 12, recon agent: 5, web
-app analyzer: 5, api analyzer: 7, infra analyzer: 9, code analyzer: 7, llm
-security analyzer: 8, evidence collector: 5, report generator: 9, ai
-triage analyzer: 5, history store: 6, diff engine: 6). All tests mock
-subprocess/HTTP calls or use a temp SQLite file — no live network access
-or installed security tools (including no live `claude` CLI calls) are
-required to run the suite.
+124/124 tests passing as of this build (scope guard: 12, recon agent: 5,
+web app analyzer: 5, api analyzer: 7, infra analyzer: 9, code analyzer: 7,
+llm security analyzer: 8, evidence collector: 7, report generator: 13, ai
+triage analyzer: 5, history store: 6, diff engine: 6, compliance mapping:
+6, alerting: 8, dashboard: 6, REST API: 14). All tests mock subprocess/
+HTTP/SMTP calls or use a temp SQLite file/scope file/in-process FastAPI
+TestClient — no live network access, installed security tools, a live
+`claude` CLI, an SMTP server, or a running API server are required to run
+the suite.
 
 ## Adding a new agent
 
@@ -260,7 +410,9 @@ The pattern established by the six scanning agents:
 3. Add a test file mirroring `tests/test_recon_agent.py` (mock subprocess)
    or `tests/test_webapp_analyzer.py` (mock HTTP via the `responses`
    library) — no real network/tool calls in the test suite
-4. `EvidenceCollector`/`ReportGenerator` need no changes — they consume any
-   agent's `AgentResult.findings` generically. If a new finding `type`
-   deserves a non-default severity, add it to `SEVERITY_BY_TYPE` in
-   `src/agents/report_generator.py`.
+4. `EvidenceCollector`/`ReportGenerator`/`diff_engine`/`dashboard` need no
+   changes — they all consume any agent's `AgentResult.findings`
+   generically. If a new finding `type` deserves a non-default severity,
+   add it to `SEVERITY_BY_TYPE` in `src/agents/report_generator.py`; if it
+   maps to a compliance control, add it to `COMPLIANCE_MAP` in
+   `src/compliance_mapping.py` (optional — unmapped types just get no tag).

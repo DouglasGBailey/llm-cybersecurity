@@ -1,0 +1,87 @@
+# EXAMPLE / ILLUSTRATIVE ONLY -- not tested against a real cluster.
+# Adapt image reference, secret names, PVC claims, and Ingress/TLS to your
+# own cluster. Deploys the REST API (src/api.py) as a long-running
+# Deployment + Service, unlike scan-job.example.yaml's one-shot Job.
+#
+# API_KEY is set here from a Secret (required in this deployment example,
+# even though src/api.py itself treats it as opt-in for local/dev use) --
+# an API reachable via a cluster Service is a much larger exposure surface
+# than a developer's own localhost, so authentication should not be left
+# optional once this is actually deployed anywhere shared.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-cybersecurity-api
+  labels:
+    app: llm-cybersecurity-api
+spec:
+  replicas: 1  # scan execution is synchronous (see src/api.py) -- a request
+               # blocks its worker for the scan's duration, so more replicas
+               # only helps with concurrent requests, not any single scan's speed
+  selector:
+    matchLabels:
+      app: llm-cybersecurity-api
+  template:
+    metadata:
+      labels:
+        app: llm-cybersecurity-api
+    spec:
+      containers:
+        - name: api
+          image: your-registry/llm-cybersecurity:latest  # build from the repo's Dockerfile
+          ports:
+            - containerPort: 8000
+          env:
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-cybersecurity-api-key
+                  key: api-key
+            - name: SCOPE_PATH
+              value: /config/scope.yaml
+            - name: REPORTS_DIR
+              value: /app/reports
+            - name: HISTORY_DB_PATH
+              value: /app/data/history.db
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /app/data
+            - name: reports
+              mountPath: /app/reports
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 2
+      volumes:
+        - name: config
+          secret:
+            secretName: llm-cybersecurity-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: llm-cybersecurity-history
+        - name: reports
+          persistentVolumeClaim:
+            claimName: llm-cybersecurity-reports
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-cybersecurity-api
+spec:
+  selector:
+    app: llm-cybersecurity-api
+  ports:
+    - port: 80
+      targetPort: 8000
+  type: ClusterIP  # keep internal; put an Ingress with TLS + auth in front
+                    # rather than switching this to LoadBalancer/NodePort directly

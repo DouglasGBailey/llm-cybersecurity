@@ -1,0 +1,14 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+logs/
+reports/
+data/
+demo/
+config/scope.yaml
+config/alerts.yaml
+config/llm_probes.yaml
+tests/

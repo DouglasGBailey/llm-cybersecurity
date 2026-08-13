@@ -1,0 +1,68 @@
+# EXAMPLE / ILLUSTRATIVE ONLY -- not tested against a real cluster (this
+# project has none to validate against). Adapt the image reference,
+# secret names, and PVC claims to your own cluster before using.
+#
+# Mirrors scripts/run-scheduled-scan.sh's use case as a Kubernetes Job
+# instead of a cron entry -- one scan, run to completion, then the pod
+# exits. For recurring scans, wrap this in a CronJob (change `kind: Job`
+# to `kind: CronJob` and add a `schedule:` + nest this under `jobTemplate:`).
+#
+# Exit code 3 (new findings -- see src/orchestrator.py) will show up as a
+# "failed" Job to Kubernetes, which is intentional: it's the same signal
+# scripts/run-scheduled-scan.sh's cron/systemd examples use to trigger
+# alerting. Don't set a high backoffLimit expecting it to "recover" --
+# a nonzero exit here is informational, not a crash to retry past.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: security-scan-local-dvwa
+  labels:
+    app: llm-cybersecurity
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: scanner
+          image: your-registry/llm-cybersecurity:latest  # build from the repo's Dockerfile
+          command:
+            - python
+            - -m
+            - src.orchestrator
+            - --scope
+            - /config/scope.yaml
+            - --target
+            - local-dvwa
+            - --agents
+            - recon,webapp,api,infra,llm
+            - --execute
+          env:
+            - name: ALERT_SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: llm-cybersecurity-alert-smtp
+                  key: username
+            - name: ALERT_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: llm-cybersecurity-alert-smtp
+                  key: password
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /app/data
+            - name: reports
+              mountPath: /app/reports
+      volumes:
+        - name: config
+          secret:
+            secretName: llm-cybersecurity-config  # scope.yaml, alerts.yaml as secret data
+        - name: data
+          persistentVolumeClaim:
+            claimName: llm-cybersecurity-history  # persists across Job runs for diffing
+        - name: reports
+          persistentVolumeClaim:
+            claimName: llm-cybersecurity-reports
