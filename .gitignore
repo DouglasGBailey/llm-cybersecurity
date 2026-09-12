@@ -8,3 +8,5 @@ data/
 config/scope.yaml
 config/llm_probes.yaml
 config/alerts.yaml
+website/contact-api/node_modules/
+website/contact-api/.env

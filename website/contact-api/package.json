@@ -1,0 +1,15 @@
+{
+  "name": "secure-verification-services-contact-api",
+  "version": "1.0.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^7.4.1",
+    "nodemailer": "^9.0.4"
+  }
+}
