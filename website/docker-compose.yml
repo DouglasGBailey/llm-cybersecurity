@@ -1,0 +1,23 @@
+# Runs the site container on an internal network only — it is not
+# published to the host directly. Point your existing nginx-in-Docker
+# reverse-proxy container at the "site" service by name (see
+# nginx.conf.example) and put both on the same docker network, e.g. an
+# external network your reverse-proxy already uses.
+#
+# Example:
+#   docker network create proxy-net   # once, shared with your reverse proxy
+#   docker compose up -d --build
+
+services:
+  site:
+    build: .
+    container_name: secure-verification-services-site
+    restart: unless-stopped
+    networks:
+      - proxy-net
+    # No `ports:` published to the host on purpose — only the reverse
+    # proxy container talks to this one, over the shared network.
+
+networks:
+  proxy-net:
+    external: true

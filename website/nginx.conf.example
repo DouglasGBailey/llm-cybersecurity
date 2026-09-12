@@ -1,0 +1,50 @@
+# Example config for the *reverse-proxy* nginx container that terminates
+# TLS in front of the site container built from this directory's
+# Dockerfile — on this host, nginx always runs in Docker (never as a
+# native host service), so this is meant to be mounted into whatever
+# nginx-in-Docker container already does TLS termination for other sites
+# here, as one more server block alongside them.
+#
+# The site container itself (see Dockerfile / nginx.conf) only ever
+# listens on plain HTTP :8080 and sends the CSP/X-Frame-Options/etc.
+# headers already — this block adds HSTS (only valid once HTTPS is
+# actually terminated here) and proxies to the site container by its
+# docker-compose service name.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name example.com www.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name example.com www.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    server_tokens off;
+
+    # HSTS belongs here, not in the site container, because this is the
+    # layer that actually terminates HTTPS.
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
+    client_max_body_size 1m;
+
+    location / {
+        proxy_pass http://secure-verification-services-site:8080;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    access_log /var/log/nginx/secure-verification-services.access.log;
+    error_log  /var/log/nginx/secure-verification-services.error.log;
+}

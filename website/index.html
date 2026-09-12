@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Secure Verification Services — Multi-Agent Security Assessment Platform</title>
+<meta name="description" content="A controlled, multi-agent security assessment platform. Scope-enforced, fully auditable, deterministic by default. Not a 'hack anything' LLM wrapper.">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; script-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action https://gumroad.com https://app.gumroad.com; upgrade-insecure-requests">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #0a0d0f;
+    --bg-raised: #10151a;
+    --bg-card: #12181e;
+    --line: #1f2932;
+    --line-bright: #2c3947;
+    --text: #e7edf1;
+    --text-dim: #93a3ad;
+    --text-faint: #5c6b74;
+    --accent: #4fe3a1;
+    --accent-dim: #2c8f66;
+    --accent-glow: rgba(79,227,161,0.16);
+    --amber: #f2b84b;
+    --red: #ef5c5c;
+    --blue: #5fb8f0;
+    --radius: 10px;
+    --radius-lg: 16px;
+    --mono: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    --sans: 'Inter', -apple-system, sans-serif;
+    --maxw: 1120px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  body::before{
+    content:"";
+    position:fixed; inset:0;
+    background-image:
+      linear-gradient(rgba(79,227,161,0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(79,227,161,0.035) 1px, transparent 1px);
+    background-size: 42px 42px;
+    mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black, transparent 75%);
+    pointer-events:none;
+    z-index:0;
+  }
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 24px; position:relative; z-index:1;}
+  a{color:inherit;}
+  img{max-width:100%;}
+  .mono{font-family:var(--mono);}
+
+  /* NAV */
+  header{
+    position:sticky; top:0; z-index:50;
+    backdrop-filter: blur(10px);
+    background:rgba(10,13,15,0.82);
+    border-bottom:1px solid var(--line);
+  }
+  nav.wrap{
+    display:flex; align-items:center; justify-content:space-between;
+    padding-top:16px; padding-bottom:16px;
+  }
+  .brand{display:flex; align-items:center; gap:10px; font-family:var(--mono); font-weight:700; font-size:16px; letter-spacing:0.02em;}
+  .brand .dot{width:9px; height:9px; border-radius:2px; background:var(--accent); box-shadow:0 0 12px var(--accent-glow); flex-shrink:0;}
+  .navlinks{display:flex; gap:28px; font-size:14px; color:var(--text-dim);}
+  .navlinks a{transition:color .15s;}
+  .navlinks a:hover{color:var(--text);}
+  .nav-cta{display:flex; align-items:center; gap:16px;}
+  @media (max-width:800px){ .navlinks{display:none;} }
+
+  .btn{
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    font-family:var(--sans); font-weight:600; font-size:14px;
+    padding:11px 20px; border-radius:8px; border:1px solid transparent;
+    cursor:pointer; text-decoration:none; transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease, background .12s ease;
+    white-space:nowrap;
+  }
+  .btn-primary{ background:var(--accent); color:#08110d; box-shadow:0 0 0 1px rgba(79,227,161,0.3), 0 8px 24px -8px rgba(79,227,161,0.55);}
+  .btn-primary:hover{ transform:translateY(-1px); box-shadow:0 0 0 1px rgba(79,227,161,0.5), 0 12px 28px -6px rgba(79,227,161,0.6);}
+  .btn-ghost{ background:transparent; border-color:var(--line-bright); color:var(--text);}
+  .btn-ghost:hover{ border-color:var(--accent-dim); background:rgba(79,227,161,0.06);}
+  .btn-lg{ padding:15px 28px; font-size:15px; border-radius:10px;}
+
+  /* HERO */
+  .hero{ padding:96px 0 72px; position:relative; }
+  .eyebrow{
+    display:inline-flex; align-items:center; gap:8px;
+    font-family:var(--mono); font-size:12.5px; color:var(--accent);
+    background:rgba(79,227,161,0.08); border:1px solid rgba(79,227,161,0.25);
+    padding:6px 12px; border-radius:100px; margin-bottom:28px;
+  }
+  .eyebrow .pulse{width:6px; height:6px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px var(--accent); animation:pulse 2s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;} 50%{opacity:.35;}}
+  h1{
+    font-family:var(--sans); font-weight:800; letter-spacing:-0.03em;
+    font-size:clamp(32px, 5.2vw, 58px); line-height:1.08; max-width:820px;
+  }
+  h1 .hl{color:var(--accent);}
+  .hero-sub{
+    margin-top:24px; font-size:18px; color:var(--text-dim); max-width:620px; line-height:1.65;
+  }
+  .hero-actions{display:flex; gap:14px; margin-top:36px; flex-wrap:wrap;}
+  .hero-meta{margin-top:20px; font-size:13px; color:var(--text-faint); font-family:var(--mono);}
+
+  .hero-grid{
+    display:grid; grid-template-columns:1.05fr 0.95fr; gap:56px; align-items:start;
+  }
+  @media (max-width:900px){ .hero-grid{grid-template-columns:1fr;} }
+
+  /* TERMINAL */
+  .terminal{
+    background:#0c1013; border:1px solid var(--line-bright); border-radius:var(--radius-lg);
+    box-shadow:0 30px 80px -30px rgba(0,0,0,0.7), 0 0 0 1px rgba(79,227,161,0.05);
+    overflow:hidden;
+  }
+  .terminal-bar{
+    display:flex; align-items:center; gap:8px;
+    padding:11px 14px; background:var(--bg-raised); border-bottom:1px solid var(--line);
+  }
+  .terminal-bar span{width:10px; height:10px; border-radius:50%; display:inline-block;}
+  .terminal-bar .r{background:#ef5c5c;} .terminal-bar .y{background:#f2b84b;} .terminal-bar .g{background:#4fe3a1;}
+  .terminal-bar .title{margin-left:8px; font-family:var(--mono); font-size:12px; color:var(--text-faint);}
+  .terminal-body{
+    padding:20px; font-family:var(--mono); font-size:13px; line-height:1.85;
+    color:#c7d3d8; min-height:280px;
+  }
+  .terminal-body .prompt{color:var(--accent);}
+  .terminal-body .path{color:var(--blue);}
+  .terminal-body .comment{color:var(--text-faint);}
+  .terminal-body .ok{color:var(--accent);}
+  .terminal-body .warn{color:var(--amber);}
+  .terminal-body .cursor{display:inline-block; width:7px; height:14px; background:var(--accent); vertical-align:-2px; animation:blink 1s step-end infinite;}
+  @keyframes blink{50%{opacity:0;}}
+
+  section{padding:88px 0; position:relative;}
+  .section-head{max-width:640px; margin-bottom:52px;}
+  .kicker{font-family:var(--mono); font-size:12.5px; color:var(--accent); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:14px; display:block;}
+  h2{font-size:clamp(26px,3.4vw,38px); font-weight:800; letter-spacing:-0.02em;}
+  .section-head p{margin-top:14px; color:var(--text-dim); font-size:16px;}
+  .divider{height:1px; background:linear-gradient(90deg, transparent, var(--line-bright), transparent);}
+
+  /* PROBLEM STRIP */
+  .strip{ background:var(--bg-raised); border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .strip .wrap{padding:56px 24px;}
+  .strip-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:32px;}
+  @media (max-width:800px){ .strip-grid{grid-template-columns:1fr;} }
+  .strip-item{display:flex; gap:14px;}
+  .strip-item .num{font-family:var(--mono); color:var(--red); font-weight:700; font-size:15px; flex-shrink:0;}
+  .strip-item h3{font-size:15px; font-weight:700; margin-bottom:6px;}
+  .strip-item p{font-size:14px; color:var(--text-dim);}
+
+  /* ARCHITECTURE */
+  .arch{
+    display:grid; grid-template-columns:220px 1fr; gap:0;
+    border:1px solid var(--line); border-radius:var(--radius-lg); overflow:hidden;
+    background:var(--bg-card);
+  }
+  @media (max-width:760px){ .arch{grid-template-columns:1fr;} }
+  .arch-orch{
+    background:linear-gradient(160deg, rgba(79,227,161,0.10), transparent);
+    border-right:1px solid var(--line);
+    padding:28px 22px; display:flex; flex-direction:column; justify-content:center; gap:10px;
+  }
+  @media (max-width:760px){ .arch-orch{border-right:none; border-bottom:1px solid var(--line);} }
+  .arch-orch .tag{font-family:var(--mono); font-size:11px; color:var(--accent); text-transform:uppercase; letter-spacing:.06em;}
+  .arch-orch h4{font-size:17px; font-weight:700;}
+  .arch-orch p{font-size:13px; color:var(--text-dim);}
+  .arch-list{ padding:8px; }
+  .arch-row{
+    display:grid; grid-template-columns:22px 1fr auto; align-items:center; gap:14px;
+    padding:13px 16px; border-radius:8px; transition:background .15s;
+  }
+  .arch-row:hover{background:rgba(255,255,255,0.02);}
+  .arch-row + .arch-row{border-top:1px solid var(--line);}
+  .arch-row .lineno{font-family:var(--mono); font-size:12px; color:var(--text-faint);}
+  .arch-row .name{font-family:var(--mono); font-size:14px; font-weight:600;}
+  .arch-row .desc{font-size:13px; color:var(--text-dim); grid-column:2; margin-top:2px;}
+  .arch-row .badge{
+    font-family:var(--mono); font-size:10.5px; padding:4px 9px; border-radius:100px; white-space:nowrap;
+    border:1px solid var(--accent-dim); color:var(--accent); background:rgba(79,227,161,0.08);
+  }
+  .arch-row .badge.deterministic{border-color:var(--line-bright); color:var(--text-dim); background:transparent;}
+  .arch-row .badge.ai{border-color:rgba(95,184,240,0.4); color:var(--blue); background:rgba(95,184,240,0.08);}
+  .arch-row .badge.gated{border-color:rgba(239,92,92,0.4); color:var(--red); background:rgba(239,92,92,0.08);}
+
+  /* FEATURE GRID */
+  .grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:20px;}
+  @media (max-width:900px){ .grid3{grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:620px){ .grid3{grid-template-columns:1fr;} }
+  .card{
+    background:var(--bg-card); border:1px solid var(--line); border-radius:var(--radius-lg);
+    padding:26px 24px; transition:border-color .15s, transform .15s;
+  }
+  .card:hover{border-color:var(--line-bright); transform:translateY(-2px);}
+  .card .icon{
+    width:38px; height:38px; border-radius:9px; display:flex; align-items:center; justify-content:center;
+    background:rgba(79,227,161,0.1); border:1px solid rgba(79,227,161,0.25); margin-bottom:16px;
+  }
+  .card h3{font-size:16px; font-weight:700; margin-bottom:8px;}
+  .card p{font-size:14px; color:var(--text-dim);}
+
+  /* SAFETY / ETHICS band */
+  .safety{
+    background:radial-gradient(ellipse 80% 100% at 50% 0%, rgba(79,227,161,0.08), transparent 60%), var(--bg-raised);
+    border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+  }
+  .safety-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:18px; margin-top:8px;}
+  @media (max-width:900px){ .safety-grid{grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:560px){ .safety-grid{grid-template-columns:1fr;} }
+  .safety-item{
+    border:1px solid var(--line-bright); border-radius:var(--radius); padding:20px;
+    background:rgba(10,13,15,0.5);
+  }
+  .safety-item .lock{font-family:var(--mono); color:var(--accent); font-size:13px; margin-bottom:10px;}
+  .safety-item h4{font-size:14.5px; font-weight:700; margin-bottom:6px;}
+  .safety-item p{font-size:13px; color:var(--text-dim);}
+
+  /* PRICING */
+  .pricing-card{
+    max-width:520px; margin:0 auto;
+    border:1px solid rgba(79,227,161,0.35); border-radius:var(--radius-lg);
+    background:linear-gradient(180deg, rgba(79,227,161,0.06), var(--bg-card) 40%);
+    padding:40px; text-align:center;
+    box-shadow:0 30px 70px -30px rgba(79,227,161,0.15);
+  }
+  .price-row{display:flex; align-items:baseline; justify-content:center; gap:10px; margin:18px 0 6px;}
+  .price{font-family:var(--mono); font-weight:800; font-size:52px; letter-spacing:-0.02em;}
+  .price-note{font-size:13px; color:var(--text-faint);}
+  .price-old{font-family:var(--mono); color:var(--text-faint); text-decoration:line-through; font-size:20px;}
+  .pricing-list{ text-align:left; margin:28px 0; display:flex; flex-direction:column; gap:12px;}
+  .pricing-list li{list-style:none; display:flex; gap:10px; font-size:14.5px; color:var(--text-dim);}
+  .pricing-list li .check{color:var(--accent); flex-shrink:0; font-weight:700;}
+  .gumroad-note{margin-top:16px; font-size:12.5px; color:var(--text-faint);}
+
+  /* COMPLIANCE STRIP */
+  .tags{display:flex; flex-wrap:wrap; gap:10px;}
+  .tags span{
+    font-family:var(--mono); font-size:12px; color:var(--text-dim);
+    border:1px solid var(--line-bright); padding:7px 13px; border-radius:100px;
+  }
+
+  /* AFFILIATES */
+  .affiliate-band{
+    background:var(--bg-raised); border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+  }
+  .affiliate-grid{display:grid; grid-template-columns:1fr 1fr; gap:48px; align-items:center;}
+  @media (max-width:860px){ .affiliate-grid{grid-template-columns:1fr;} }
+  .affiliate-steps{display:flex; flex-direction:column; gap:18px; margin:26px 0 30px;}
+  .astep{display:flex; gap:14px; align-items:flex-start;}
+  .astep .n{
+    font-family:var(--mono); font-weight:700; font-size:13px; color:var(--accent);
+    width:26px; height:26px; border-radius:7px; border:1px solid var(--accent-dim);
+    display:flex; align-items:center; justify-content:center; flex-shrink:0; background:rgba(79,227,161,0.08);
+  }
+  .astep h4{font-size:14.5px; font-weight:700; margin-bottom:3px;}
+  .astep p{font-size:13.5px; color:var(--text-dim);}
+  .commission-card{
+    border:1px solid rgba(79,227,161,0.35); border-radius:var(--radius-lg);
+    background:linear-gradient(180deg, rgba(79,227,161,0.08), var(--bg-card) 55%);
+    padding:36px; text-align:center;
+  }
+  .commission-card .big{font-family:var(--mono); font-weight:800; font-size:56px; color:var(--accent); letter-spacing:-0.02em;}
+  .commission-card .label{font-size:13px; color:var(--text-dim); margin-top:4px;}
+  .commission-card .split{
+    display:flex; justify-content:space-around; margin-top:28px; padding-top:24px; border-top:1px solid var(--line);
+  }
+  .commission-card .split div{font-family:var(--mono);}
+  .commission-card .split .v{font-size:20px; font-weight:700;}
+  .commission-card .split .k{font-size:11.5px; color:var(--text-faint); margin-top:2px;}
+
+  /* FAQ */
+  .faq-item{border-bottom:1px solid var(--line);}
+  .faq-q{
+    width:100%; text-align:left; background:none; border:none; color:var(--text);
+    font-family:var(--sans); font-size:16px; font-weight:600; padding:22px 0;
+    display:flex; justify-content:space-between; align-items:center; cursor:pointer; gap:20px;
+  }
+  .faq-q .plus{font-family:var(--mono); color:var(--accent); font-size:20px; transition:transform .2s; flex-shrink:0;}
+  .faq-item.open .faq-q .plus{transform:rotate(45deg);}
+  .faq-a{max-height:0; overflow:hidden; transition:max-height .25s ease;}
+  .faq-a p{padding-bottom:22px; color:var(--text-dim); font-size:14.5px; max-width:680px;}
+
+  /* FOOTER CTA */
+  .final-cta{
+    text-align:center; padding:100px 0 110px;
+    background:radial-gradient(ellipse 60% 80% at 50% 100%, rgba(79,227,161,0.10), transparent 70%);
+  }
+  .final-cta h2{max-width:600px; margin:0 auto;}
+  .final-cta p{margin:18px auto 0; max-width:480px; color:var(--text-dim);}
+  .final-cta .hero-actions{justify-content:center; margin-top:32px;}
+
+  footer{border-top:1px solid var(--line); padding:36px 0;}
+  footer .wrap{display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;}
+  footer .flinks{display:flex; gap:22px; font-size:13px; color:var(--text-faint);}
+  footer .fnote{font-size:12.5px; color:var(--text-faint); font-family:var(--mono);}
+
+  ::selection{background:var(--accent-glow); color:var(--text);}
+</style>
+</head>
+<body>
+
+<header>
+  <nav class="wrap">
+    <div class="brand"><span class="dot"></span>Secure Verification Services</div>
+    <div class="navlinks">
+      <a href="#architecture">Architecture</a>
+      <a href="#safety">Safety model</a>
+      <a href="#features">Features</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#affiliates">Affiliates</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <div class="nav-cta">
+      <a href="#pricing" class="btn btn-primary">Get it on Gumroad</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow"><span class="pulse"></span>v1.0 — self-hosted, source included</span>
+        <h1>A security scanner that <span class="hl">refuses to run</span> against anything you didn't authorize.</h1>
+        <p class="hero-sub">
+          Secure Verification Services is a multi-agent security assessment platform for people who want to
+          <em>build</em> auditable security automation, not point an LLM at a server and hope.
+          Nine scanning agents, a hard-coded tool allowlist per agent, and a scope file that gates
+          every single action — enforced in code, not just in a README.
+        </p>
+        <div class="hero-actions">
+          <a href="#pricing" class="btn btn-primary btn-lg">Buy on Gumroad — instant download</a>
+          <a href="#architecture" class="btn btn-ghost btn-lg">See the architecture ↓</a>
+        </div>
+        <div class="hero-meta">python3 · MIT-friendly source · runs fully offline except optional AI triage</div>
+      </div>
+
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="r"></span><span class="y"></span><span class="g"></span>
+          <span class="title">secure-verification-services — orchestrator.py</span>
+        </div>
+        <div class="terminal-body" id="termBody"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="strip">
+    <div class="wrap strip-grid">
+      <div class="strip-item">
+        <div class="num">01</div>
+        <div><h3>"AI, hack this" tools scare you</h3><p>Unscoped autonomous agents with shell access are a liability, not a tool — one bad prompt and you own the blast radius.</p></div>
+      </div>
+      <div class="strip-item">
+        <div class="num">02</div>
+        <div><h3>Point tools give you noise</h3><p>Nmap, nikto, and a dozen scanners with no shared model of scope, no diffing across runs, and no compliance mapping.</p></div>
+      </div>
+      <div class="strip-item">
+        <div class="num">03</div>
+        <div><h3>You need to show your work</h3><p>Clients and auditors want evidence, not vibes — a Markdown report with OWASP/CIS tags beats a chat transcript.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <section id="architecture">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="kicker">Architecture</span>
+        <h2>One orchestrator. Nine scoped agents. Zero surprises.</h2>
+        <p>Every agent subclasses the same base class: it must pass <code class="mono">ScopeGuard.authorize()</code> before touching a target, and it can only call binaries in its own hard-coded allowlist. The orchestrating LLM directs <em>which</em> agents run — it cannot expand what any agent is permitted to do.</p>
+      </div>
+
+      <div class="arch">
+        <div class="arch-orch">
+          <span class="tag">Orchestrator</span>
+          <h4>orchestrator.py</h4>
+          <p>Reads scope.yaml, dispatches agents, defaults to <code class="mono">--dry-run</code>. Nothing executes for real until you pass <code class="mono">--execute</code>.</p>
+        </div>
+        <div class="arch-list">
+          <div class="arch-row">
+            <span class="lineno">01</span><span class="name">Recon Agent</span><span class="badge deterministic">deterministic</span>
+            <span class="desc">nmap / dig / whois enumeration.</span>
+          </div>
+          <div class="arch-row">
+            <span class="lineno">02</span><span class="name">Web App Analyzer</span><span class="badge deterministic">deterministic</span>
+            <span class="desc">Headers, robots.txt, stack fingerprinting.</span>
+          </div>
+          <div class="arch-row">
+            <span class="lineno">03</span><span class="name">API Analyzer</span><span class="badge deterministic">deterministic</span>
+            <span class="desc">OpenAPI/GraphQL discovery, verbose-error detection.</span>
+          </div>
+          <div class="arch-row">
+            <span class="lineno">04</span><span class="name">Infrastructure Analyzer</span><span class="badge deterministic">deterministic</span>
+            <span class="desc">TLS hygiene, SPF/DMARC/DNSSEC — never guesses a port.</span>
+          </div>
+          <div class="arch-row">
+            <span class="lineno">05</span><span class="name">Code Analyzer</span><span class="badge deterministic">deterministic</span>
+            <span class="desc">bandit / semgrep over a local, separately-authorized path.</span>
+          </div>
+          <div class="arch-row">
+            <span class="lineno">06</span><span class="name">LLM Security Analyzer</span><span class="badge deterministic">deterministic</span>
+            <span class="desc">Prompt-injection / jailbreak probes against your own LLM endpoint.</span>
+          </div>
+          <div class="arch-row">
+            <span class="lineno">07</span><span class="name">Kubernetes Analyzer</span><span class="badge deterministic">deterministic</span>
+            <span class="desc">Read-only cluster hygiene — privileged pods, RBAC, exposure.</span>
+          </div>
+          <div class="arch-row">
+            <span class="lineno">08</span><span class="name">Exploit Agent</span><span class="badge gated">separately gated</span>
+            <span class="desc">Declared, known techniques only — requires its own scope entry + resettable:true.</span>
+          </div>
+          <div class="arch-row">
+            <span class="lineno">09</span><span class="name">AI Triage Analyzer</span><span class="badge ai">opt-in AI</span>
+            <span class="desc">The one LLM-powered step: prioritized narrative from the evidence bundle.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="divider wrap"></div>
+
+  <section id="safety" class="safety">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="kicker">Safety model</span>
+        <h2>Scope enforcement is the product, not a feature.</h2>
+        <p>Everything below is enforced at the code level by <code class="mono">ScopeGuard</code> — not documentation you're trusting an LLM to remember.</p>
+      </div>
+      <div class="safety-grid">
+        <div class="safety-item"><div class="lock">&#9632; allowlist</div><h4>Explicit targets only</h4><p>Scans refuse to run against anything not listed in your <code class="mono">scope.yaml</code>.</p></div>
+        <div class="safety-item"><div class="lock">&#9632; dry-run default</div><h4>Nothing fires by accident</h4><p>Every run prints planned actions first. Real execution needs an explicit <code class="mono">--execute</code> flag.</p></div>
+        <div class="safety-item"><div class="lock">&#9632; two-tier auth</div><h4>Recon ≠ exploit</h4><p>Being scannable doesn't authorize exploitation — that needs its own scope entry and a <code class="mono">resettable: true</code> disposable target.</p></div>
+        <div class="safety-item"><div class="lock">&#9632; full audit trail</div><h4>Every action logged</h4><p>Structured JSONL logging of every agent action to <code class="mono">logs/agent-activity.jsonl</code>.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <span class="kicker">What you get</span>
+        <h2>Everything to run, report, and repeat a scan.</h2>
+      </div>
+      <div class="grid3">
+        <div class="card"><div class="icon">▣</div><h3>One-command lab + menu</h3><p><code class="mono">start-system.sh</code> is a single interactive entrypoint: run scans, view reports, manage local lab targets, start the API — no command memorization.</p></div>
+        <div class="card"><div class="icon">▤</div><h3>History + diffing</h3><p>SQLite-backed run history per target with a diff engine that shows new / resolved / unchanged findings between scans.</p></div>
+        <div class="card"><div class="icon">▥</div><h3>Compliance mapping</h3><p>Findings auto-tag to OWASP Top 10, CIS Controls v8, PCI DSS 4.0, and OWASP Top 10 for LLM Apps — with a coverage summary in every report.</p></div>
+        <div class="card"><div class="icon">▦</div><h3>Static dashboard</h3><p>Generate a browsable HTML dashboard over your scan history — no server required to view it.</p></div>
+        <div class="card"><div class="icon">▧</div><h3>REST API</h3><p>Wrap the orchestrator behind <code class="mono">api.py</code> to trigger scans and pull evidence from your own tooling.</p></div>
+        <div class="card"><div class="icon">▨</div><h3>Email alerting</h3><p>Opt-in SMTP alerting when a scan turns up findings that weren't there last time.</p></div>
+        <div class="card"><div class="icon">▩</div><h3>Two live lab targets</h3><p>Ships with DVWA and Kubernetes Goat tutorials pre-wired as safe, resettable practice targets.</p></div>
+        <div class="card"><div class="icon">◆</div><h3>Graceful degradation</h3><p>Missing tool (no nmap? no kubectl?) records a <code class="mono">tool-unavailable</code> finding instead of crashing your run.</p></div>
+        <div class="card"><div class="icon">◈</div><h3>Full source, no lock-in</h3><p>Plain Python, readable agents, no black-box binary. Fork it, extend it, run it air-gapped.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="pricing">
+    <div class="wrap">
+      <div class="section-head" style="margin:0 auto 48px; text-align:center; max-width:560px;">
+        <span class="kicker">Pricing</span>
+        <h2>One license. Full source. Yours forever.</h2>
+      </div>
+      <div class="pricing-card">
+        <span class="mono" style="color:var(--text-faint); font-size:13px; text-transform:uppercase; letter-spacing:.06em;">Full platform</span>
+        <div class="price-row">
+          <span class="price">$79</span>
+        </div>
+        <p class="price-note">one-time payment · lifetime updates · use on unlimited machines you own</p>
+        <ul class="pricing-list">
+          <li><span class="check">✓</span> Full source for all 9 agents + orchestrator</li>
+          <li><span class="check">✓</span> ScopeGuard authorization engine</li>
+          <li><span class="check">✓</span> DVWA + Kubernetes Goat tutorial labs</li>
+          <li><span class="check">✓</span> Report generator, dashboard, REST API</li>
+          <li><span class="check">✓</span> Compliance mapping (OWASP / CIS / PCI / LLM Top 10)</li>
+          <li><span class="check">✓</span> Setup docs + FUNCTIONAL_SPEC + TECHNICAL_SPEC</li>
+        </ul>
+        <a href="https://gumroad.com/l/your-product-id" rel="noopener noreferrer" class="btn btn-primary btn-lg" style="width:100%;">Buy now on Gumroad</a>
+        <div class="gumroad-note">Secure checkout via Gumroad · instant download link + email delivery</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="divider wrap"></div>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="kicker">Built for real frameworks</span>
+        <h2>Findings map to controls you already report on.</h2>
+      </div>
+      <div class="tags">
+        <span>OWASP Top 10 (2021)</span>
+        <span>OWASP Top 10 for LLM Applications</span>
+        <span>CIS Controls v8</span>
+        <span>PCI DSS 4.0</span>
+        <span>JSONL audit log</span>
+        <span>SQLite run history</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="affiliates" class="affiliate-band">
+    <div class="wrap">
+      <div class="affiliate-grid">
+        <div>
+          <span class="kicker">Affiliate program</span>
+          <h2>Recommend it. Get paid on every sale.</h2>
+          <p class="hero-sub" style="margin-top:14px; font-size:15.5px;">Payouts and tracking run entirely through Gumroad's built-in affiliate system — no separate login, no manual invoicing. Apply once, get a unique link, get paid automatically as sales come in.</p>
+          <div class="affiliate-steps">
+            <div class="astep">
+              <span class="n">1</span>
+              <div><h4>Apply as a Gumroad affiliate</h4><p>Use the link below to request affiliate access to Secure Verification Services — approval is typically same-day.</p></div>
+            </div>
+            <div class="astep">
+              <span class="n">2</span>
+              <div><h4>Share your unique link</h4><p>Gumroad generates a personal tracking link and, if you prefer, discount codes you control.</p></div>
+            </div>
+            <div class="astep">
+              <span class="n">3</span>
+              <div><h4>Get paid automatically</h4><p>Commission is credited on every sale attributed to your link and paid out on Gumroad's normal payout schedule — no chasing invoices.</p></div>
+            </div>
+          </div>
+          <a href="https://app.gumroad.com/affiliates" rel="noopener noreferrer" class="btn btn-primary btn-lg">Apply to become an affiliate</a>
+        </div>
+        <div class="commission-card">
+          <div class="big">30%</div>
+          <div class="label">commission on every referred sale</div>
+          <div class="split">
+            <div><div class="v mono">$79</div><div class="k">SALE PRICE</div></div>
+            <div><div class="v mono" style="color:var(--accent);">$23.70</div><div class="k">YOUR CUT</div></div>
+            <div><div class="v mono">90-day</div><div class="k">COOKIE WINDOW</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq">
+    <div class="wrap" style="max-width:760px;">
+      <div class="section-head">
+        <span class="kicker">FAQ</span>
+        <h2>Before you buy</h2>
+      </div>
+      <div id="faqList">
+        <div class="faq-item">
+          <button class="faq-q">Is this actually AI-powered, or just branded that way? <span class="plus">+</span></button>
+          <div class="faq-a"><p>Mostly no, by design. Every scanning agent (Recon through Kubernetes) is fully deterministic rule-based code — regex, header checks, substring matching. Fully auditable, no model in the loop. The one AI-powered piece is the optional AI Triage Analyzer, which turns your evidence bundle into a prioritized narrative. It's opt-in, clearly labeled AI-generated, and never blended into the deterministic report.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q">Can I point this at any website I want? <span class="plus">+</span></button>
+          <div class="faq-a"><p>No — and that's the point. Every agent calls <code class="mono">ScopeGuard.authorize(target)</code> before doing anything. Targets not explicitly listed in your <code class="mono">scope.yaml</code> are refused. This tool is for scanning infrastructure and applications you own or are explicitly authorized to test.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q">What does the Exploit Agent actually do? <span class="plus">+</span></button>
+          <div class="faq-a"><p>It proves impact against targets you've separately authorized for exploitation — not discovery. It executes declared, known techniques (SQLi, reflected XSS, command injection, weak-credential login) against declared endpoints you configure. It requires a <code class="mono">resettable: true</code> entry, enforced at scope-file load time, because it's meant for disposable lab containers, not production systems.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q">What do I need installed? <span class="plus">+</span></button>
+          <div class="faq-a"><p>Python 3 with a virtual environment, and <code class="mono">nmap</code> for the Recon Agent's port scan step. <code class="mono">bandit</code> installs via requirements.txt. <code class="mono">semgrep</code> and <code class="mono">kubectl</code> are optional, only needed for Code Analyzer's deeper scan and Kubernetes Analyzer respectively. Any missing tool degrades gracefully.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q">Does it send my data anywhere? <span class="plus">+</span></button>
+          <div class="faq-a"><p>Only if you opt in. Everything runs locally by default. The only feature that leaves your machine is <code class="mono">--ai-triage</code>, which shells out to Claude with your evidence bundle — entirely optional and off by default.</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q">What's the refund policy? <span class="plus">+</span></button>
+          <div class="faq-a"><p>Handled through Gumroad's standard buyer protection at checkout. If the platform doesn't run in a standard Python virtualenv on Linux/macOS, reach out and we'll sort it out.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="final-cta">
+    <div class="wrap">
+      <h2>Stop wiring together nmap, bandit, and a prayer.</h2>
+      <p>One scoped, auditable platform. Nine agents. A safety model enforced in code.</p>
+      <div class="hero-actions">
+        <a href="#pricing" class="btn btn-primary btn-lg">Buy on Gumroad — $79</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="brand" style="font-size:14px;"><span class="dot"></span>Secure Verification Services</div>
+    <div class="flinks">
+      <a href="#architecture">Architecture</a>
+      <a href="#safety">Safety model</a>
+      <a href="#faq">FAQ</a>
+    </div>
+    <div class="fnote">For authorized security testing only.</div>
+  </div>
+</footer>
+
+<script>
+  // Typed terminal effect
+  var lines = [
+    {t:'$ ', c:'prompt', append:'./start-system.sh', typed:true},
+    {t:'', c:'comment', append:'  # interactive menu — scan, report, dashboard, lab', typed:false, inline:true},
+    {t:'', c:'', append:'\n', typed:false, raw:true},
+    {t:'', c:'', append:'[1] Run scan   [2] View report   [3] Dashboard   [4] Lab targets', typed:false},
+    {t:'\n> ', c:'prompt', append:'1', typed:true},
+    {t:'', c:'', append:'\n', typed:false, raw:true},
+    {t:'', c:'comment', append:'target: local-dvwa   mode: dry-run', typed:false},
+    {t:'', c:'ok', append:'✓ ScopeGuard: target authorized (config/scope.yaml)', typed:false},
+    {t:'', c:'ok', append:'✓ recon        → 3 findings   (port-scan, dns, whois)', typed:false},
+    {t:'', c:'ok', append:'✓ webapp       → 5 findings   (missing-hsts, verbose-error)', typed:false},
+    {t:'', c:'ok', append:'✓ api          → 1 finding    (openapi-exposed)', typed:false},
+    {t:'', c:'warn', append:'⚠ infra        → tls_port not set, TLS check skipped', typed:false},
+    {t:'', c:'ok', append:'✓ code         → 2 findings   (bandit: hardcoded-secret)', typed:false},
+    {t:'', c:'', append:'\n', typed:false, raw:true},
+    {t:'', c:'comment', append:'evidence.json → report.md', typed:false},
+    {t:'', c:'comment', append:'compliance coverage: OWASP A05, A02 · CIS 4.1, 16.1', typed:false},
+    {t:'', c:'', append:'\n', typed:false, raw:true},
+    {t:'$ ', c:'prompt', append:'', typed:false, cursorOnly:true}
+  ];
+  var body = document.getElementById('termBody');
+  var i = 0;
+  function renderNext(){
+    if(i >= lines.length){
+      var cur = document.createElement('span');
+      cur.className='cursor';
+      body.appendChild(cur);
+      return;
+    }
+    var line = lines[i];
+    var div = document.createElement('div');
+    if(line.raw){ body.appendChild(document.createElement('br')); i++; return renderNext(); }
+    var promptSpan = document.createElement('span');
+    promptSpan.className = 'prompt';
+    promptSpan.textContent = line.t;
+    var textSpan = document.createElement('span');
+    textSpan.className = line.c;
+    div.appendChild(promptSpan);
+    div.appendChild(textSpan);
+    body.appendChild(div);
+    var full = line.append;
+    var j = 0;
+    var speed = line.typed ? 38 : 0;
+    if(speed === 0){
+      textSpan.textContent = full;
+      i++;
+      setTimeout(renderNext, 90);
+    } else {
+      var iv = setInterval(function(){
+        textSpan.textContent += full[j];
+        j++;
+        if(j >= full.length){
+          clearInterval(iv);
+          i++;
+          setTimeout(renderNext, 250);
+        }
+      }, speed);
+    }
+  }
+  renderNext();
+
+  // FAQ accordion
+  document.querySelectorAll('.faq-item').forEach(function(item){
+    var q = item.querySelector('.faq-q');
+    var a = item.querySelector('.faq-a');
+    q.addEventListener('click', function(){
+      var isOpen = item.classList.contains('open');
+      document.querySelectorAll('.faq-item.open').forEach(function(o){
+        o.classList.remove('open');
+        o.querySelector('.faq-a').style.maxHeight = null;
+      });
+      if(!isOpen){
+        item.classList.add('open');
+        a.style.maxHeight = a.scrollHeight + 'px';
+      }
+    });
+  });
+</script>
+
+</body>
+</html>
